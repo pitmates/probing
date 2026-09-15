@@ -6,20 +6,21 @@ import json
 from unittest.mock import MagicMock, patch
 
 import probing.handlers.pythonext as pythonext
+import probing.repl.torch_magic as torch_magic
 
 
 def test_profile_start_handler_success():
-    with patch("probing.repl.torch_magic.TorchMagic") as mock_cls:
+    with patch.object(torch_magic, "TorchMagic") as mock_cls:
         mock_cls.return_value._start_global_profiler.return_value = MagicMock()
         result = json.loads(
             pythonext.handle_api_request(
                 "pytorch/profile/start",
-                {"steps": "2", "trigger": "http"},
+                {"steps": "2", "trigger": "http", "analysis": "roofline"},
             )
         )
     assert result["success"] is True
     mock_cls.return_value._start_global_profiler.assert_called_once_with(
-        2, trigger="http"
+        2, trigger="http", analysis="roofline"
     )
 
 

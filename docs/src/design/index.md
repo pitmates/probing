@@ -32,7 +32,7 @@ Vocabulary: **[Core model](../guide/concepts.md)**.
 | Document | Status | Description |
 |----------|--------|-------------|
 | [Profiling and tracing](profiling.md) | Current | TorchProbe, spans/phases, Python/native stacks, and system collection |
-| [Operator Roofline](roofline.md) | Target design | Capture-scoped CUPTI counters, operator attribution, and compute/memory bottleneck classification |
+| [Operator Roofline](roofline.md) | Current | Capture-scoped CUPTI counters, operator attribution, and compute/memory bottleneck classification |
 | [NCCL Profiler](nccl-profiler.md) | Current | Plugin ABI and wait decomposition |
 | [Overhead](overhead.md) | Current | Shadow-step formulas, change invariants, and offline benchmarks |
 

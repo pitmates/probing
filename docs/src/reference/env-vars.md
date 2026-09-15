@@ -140,6 +140,11 @@ Non-PROBING-prefixed aliases are also recognized for Megatron compatibility:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PROBING_TORCH_PROFILING` | — | Set to `on` to activate PyTorch module hooks and write `python.torch_trace`. Default when enabled: **5% step sampling** (`rate=0.05`), full-snapshot (`layer_rate=1.0`), **shadow cadence 4:1** (`shadow=4:1` — one baseline step per four probed steps for in-run overhead in `python.torch_step_timing`). Spec is `rate[:layer_rate]` (`layer_rate` = per-layer hit probability on a sampled step); a leading `random:`/`ordered:` token is accepted for back-compat (always `random`). Override with e.g. `1.0`, `0.05:0.1`, `shadow=8:2`, or `shadow=off`. **Backward** timing (`backward=on`) times each module's backward via output/input grad hooks; off by default. |
+| `PROBING_TORCH_PROFILER_ANALYSIS` | `none` | Default analysis features for on-demand `torch.profiler` captures. Set to `roofline` to enable CUPTI counters for `python.profile_counter` / `python.profile_roofline`; the per-capture `analysis=roofline` request parameter takes precedence. |
+| `PROBING_TORCH_ROOFLINE_METRICS` | HTA set | Comma-separated CUPTI metric override for roofline captures. |
+| `PROBING_TORCH_ROOFLINE_BALANCED_THRESHOLD` | `0.9` | Roofline balanced-classification threshold. |
+| `PROBING_TORCH_ROOFLINE_PEAKS_JSON` | — | Explicit `fp16_tensor_dense` peak values: `{"fp16_tensor_dense":{"peak_flops":312e12,"peak_bytes_per_sec":1.6e12}}`. |
+| `PROBING_TORCH_ROOFLINE_MAX_EVENTS` | `200000` | Roofline raw-event cap; exceeding it marks results `data_quality="truncated"`. |
 | `PROBING_TORCHRUN_CLUSTER` | `1` | Enable automatic torchrun cluster registration. Set to `0` to disable. |
 | `PROBING_TORCHRUN_STORE_TIMEOUT` | — | Timeout for torchrun distributed store operations. |
 | `PROBING_TCPSTORE_INSPECT` | `0` | Allow `pytorch/runtime-debug?include_values=true` to preview otherwise-redacted TCPStore values. The endpoint remains read-only. Use only in trusted environments. |

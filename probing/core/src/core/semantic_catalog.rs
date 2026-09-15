@@ -261,7 +261,8 @@ fn python_extern_table_column_names(table_name: &str) -> Option<Vec<String>> {
 pub fn is_live_python_table(table_name: &str) -> bool {
     matches!(
         table_name,
-        "backtrace" | "profile_capture" | "profile_hotspot"
+        "backtrace" | "profile_capture" | "profile_hotspot" | "profile_counter"
+            | "profile_roofline"
     )
 }
 
@@ -276,7 +277,12 @@ mod live_table_tests {
 
     #[test]
     fn profile_tables_are_live_not_mmap_extern() {
-        for name in ["profile_capture", "profile_hotspot"] {
+        for name in [
+            "profile_capture",
+            "profile_hotspot",
+            "profile_counter",
+            "profile_roofline",
+        ] {
             assert!(is_live_python_table(name), "{name} should be live");
             assert!(
                 !known_python_extern_table(name),

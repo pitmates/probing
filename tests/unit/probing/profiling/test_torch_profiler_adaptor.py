@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,7 +14,9 @@ from probing.profiling.torch_profiler.adaptor import (
 )
 from probing.profiling.torch_profiler.session_store import (
     CaptureRecord,
+    CounterRecord,
     HotspotRecord,
+    RooflineRecord,
     SessionStore,
 )
 
@@ -27,6 +29,8 @@ class _FakeEvent:
     cuda_time_total: int = 0
     cpu_time_total: int = 0
     count: int = 1
+    args: dict = field(default_factory=dict)
+    id: int | None = None
 
 
 @pytest.fixture
@@ -127,7 +131,7 @@ def test_compile_from_profiler_uses_key_averages(stub_coords):
     profiler.key_averages.return_value = [
         _FakeEvent("aten::add", self_cpu_time_total=25),
     ]
-    capture, hotspots = compile_from_profiler(
+    capture, hotspots, counters, rooflines, quality = compile_from_profiler(
         profiler,
         trigger="unit",
         steps_profiled=1,
@@ -137,13 +141,16 @@ def test_compile_from_profiler_uses_key_averages(stub_coords):
     assert capture.trigger == "unit"
     assert len(hotspots) == 1
     assert hotspots[0].bucket_name == "aten::add"
+    assert counters == []
+    assert rooflines == []
+    assert quality == "unavailable"
 
 
 def test_compile_from_profiler_falls_back_to_events(stub_coords):
     profiler = MagicMock()
     profiler.key_averages.side_effect = RuntimeError("not ready")
     profiler.events.return_value = [_FakeEvent("kernel_a", self_cuda_time_total=10)]
-    capture, hotspots = compile_from_profiler(
+    capture, hotspots, _, _, _ = compile_from_profiler(
         profiler,
         trigger="unit",
         steps_profiled=1,
@@ -164,7 +171,87 @@ def test_session_store_bounded(monkeypatch):
         store.add_capture(
             CaptureRecord(capture_id=cid, status="completed"),
             [HotspotRecord(capture_id=cid, bucket_name="k", self_us=1)],
+            [CounterRecord(capture_id=cid, kernel_name="k", calls=1)],
+            [RooflineRecord(capture_id=cid, kernel_name="k", calls=1)],
         )
     assert len(store.captures()) == 2
     assert store.captures()[0].capture_id == "c1"
     assert all(h.capture_id != "c0" for h in store.hotspots())
+    assert all(c.capture_id != "c0" for c in store.counters())
+    assert all(r.capture_id != "c0" for r in store.rooflines())
+
+
+def test_compile_counter_and_roofline(stub_coords, monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_METRICS",
+        ",".join(
+            [
+                "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum",
+                "smsp__sass_thread_inst_executed_op_fmul_pred_on.sum",
+                "dram__bytes_read.sum",
+                "dram__bytes_write.sum",
+                "sm__warps_active.avg.pct_of_peak_sustained_active",
+            ]
+        ),
+    )
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_PEAKS_JSON",
+        '{"fp16_tensor_dense":{"peak_flops":1000,"peak_bytes_per_sec":100}}',
+    )
+    raw_events = [
+        _FakeEvent("aten::linear", id=10),
+        _FakeEvent(
+            "gemm",
+            id=10,
+            self_cuda_time_total=1_000,
+            args={
+                "cat": "cuda_profiler_range",
+                "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 3,
+                "smsp__sass_thread_inst_executed_op_fmul_pred_on.sum": 4,
+                "dram__bytes_read.sum": 10,
+                "dram__bytes_write.sum": 15,
+                "sm__warps_active.avg.pct_of_peak_sustained_active": 0.5,
+            },
+        ),
+    ]
+    profiler = MagicMock()
+    profiler.events.return_value = raw_events
+    profiler.key_averages.return_value = []
+    capture, hotspots, counters, rooflines, quality = compile_from_profiler(
+        profiler,
+        trigger="unit",
+        steps_profiled=1,
+        started_at_us=0,
+        ended_at_us=50,
+        analysis="roofline",
+    )
+    assert quality == "ok"
+    assert capture.analysis == "roofline"
+    assert capture.roofline_quality == "ok"
+    assert capture.roofline_counter_events == 1
+    assert capture.roofline_associated_kernels == 1
+    assert capture.roofline_unassociated_kernels == 0
+    assert capture.roofline_missing_metrics == "[]"
+    assert capture.roofline_parser_version.startswith("probing-roofline-v1+hta-")
+    assert len(counters) == len(rooflines) == 1
+    counter = counters[0]
+    assert counter.op_name == "aten::linear"
+    assert counter.calls == 1
+    assert counter.flops == 3 * 2 + 4
+    assert counter.dram_bytes == 25
+    assert counter.metrics == '{"sm__warps_active.avg.pct_of_peak_sustained_active":0.5}'
+    roofline = rooflines[0]
+    assert roofline.arithmetic_intensity == 10 / 25
+    assert roofline.achieved_flops == 10_000
+    assert roofline.achieved_bytes_per_sec == 25_000
+    assert roofline.bottleneck == "compute"
+
+
+def test_roofline_defaults_and_env_selection(monkeypatch):
+    from probing.profiling.torch_profiler.adaptor import roofline_analysis_enabled
+
+    monkeypatch.delenv("PROBING_TORCH_PROFILER_ANALYSIS", raising=False)
+    assert roofline_analysis_enabled(None) is False
+    monkeypatch.setenv("PROBING_TORCH_PROFILER_ANALYSIS", "roofline")
+    assert roofline_analysis_enabled(None) is True
+    assert roofline_analysis_enabled("none") is False

@@ -245,7 +245,7 @@ Examples:
         return args
 
     def _start_global_profiler(
-        self, steps: int = 1, trigger: str = "http"
+        self, steps: int = 1, trigger: str = "http", analysis: str = "none"
     ) -> ProfilerController:
         """Start profiler (HTTP / legacy callers)."""
         if not HAS_TORCH:
@@ -255,7 +255,7 @@ Examples:
         controller = get_controller()
         if controller.is_running:
             raise RuntimeError("profiler already running")
-        controller.start(steps=steps, trigger=trigger)
+        controller.start(steps=steps, trigger=trigger, analysis=analysis)
         __main__.__probing__[self.PROFILER_KEY] = controller
         __main__.profiler = controller
         return controller

@@ -225,6 +225,8 @@ impl CustomNamespace for PythonNamespace {
             "backtrace".to_string(),
             "profile_capture".to_string(),
             "profile_hotspot".to_string(),
+            "profile_counter".to_string(),
+            "profile_roofline".to_string(),
         ]
     }
 
@@ -256,6 +258,22 @@ impl CustomNamespace for PythonNamespace {
                 Ok(batches) => batches,
                 Err(e) => {
                     error!("python.profile_hotspot: {e:?}");
+                    error_batch(&e.to_string())
+                }
+            }
+        } else if expr == "profile_counter" {
+            match super::profile_counter::profile_counter_batches() {
+                Ok(batches) => batches,
+                Err(e) => {
+                    error!("python.profile_counter: {e:?}");
+                    error_batch(&e.to_string())
+                }
+            }
+        } else if expr == "profile_roofline" {
+            match super::profile_roofline::profile_roofline_batches() {
+                Ok(batches) => batches,
+                Err(e) => {
+                    error!("python.profile_roofline: {e:?}");
                     error_batch(&e.to_string())
                 }
             }

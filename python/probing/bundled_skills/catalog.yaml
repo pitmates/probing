@@ -154,6 +154,21 @@ skills:
   - comm_bottleneck
   - memory_leak
   path: module_bottleneck/steps.yaml
+- id: operator_roofline
+  category: performance
+  priority: 5
+  description: Classify operator/kernel compute-memory bottlenecks from CUPTI counters
+  tables:
+  - python.profile_capture
+  - python.profile_counter
+  - python.profile_roofline
+  pages:
+  - profiling/torch
+  - analytics
+  related:
+  - module_bottleneck
+  - gpu_pressure
+  path: operator_roofline/steps.yaml
 - id: comm_bottleneck
   category: distributed
   priority: 5

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import sys
+import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,6 +28,19 @@ def _mock_profiler(events: list[_FakeEvent]) -> MagicMock:
     profiler.key_averages.return_value = events
     profiler.__exit__ = MagicMock(return_value=None)
     return profiler
+
+
+def _install_fake_torch(monkeypatch) -> MagicMock:
+    fake_torch = MagicMock()
+    fake_torch.cuda.is_available.return_value = False
+    optimizer_module = types.ModuleType("torch.optim.optimizer")
+    optimizer_module.register_optimizer_step_post_hook = MagicMock(return_value=1)
+    optimizer_package = types.ModuleType("torch.optim")
+    optimizer_package.optimizer = optimizer_module
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "torch.optim", optimizer_package)
+    monkeypatch.setitem(sys.modules, "torch.optim.optimizer", optimizer_module)
+    return fake_torch
 
 
 def test_finalize_materializes_sql_rows(monkeypatch):
@@ -113,47 +128,38 @@ def test_stop_when_idle_returns_latest_capture(monkeypatch):
 
 
 def test_status_reflects_controller(monkeypatch):
-    import torch.optim.optimizer as torch_optim
-
     mock_profile = MagicMock()
+    fake_torch = _install_fake_torch(monkeypatch)
     monkeypatch.setattr(
         "probing.profiling.torch_profiler.controller.HAS_TORCH",
         True,
     )
-    mock_torch = MagicMock()
-    mock_torch.cuda.is_available.return_value = False
-    mock_torch.profiler.profile.return_value = mock_profile
-    monkeypatch.setattr("probing.profiling.torch_profiler.controller.torch", mock_torch)
+    fake_torch.profiler.profile.return_value = mock_profile
     monkeypatch.setattr(
-        torch_optim,
-        "register_optimizer_step_post_hook",
-        MagicMock(return_value=1),
+        "probing.profiling.torch_profiler.controller.torch",
+        fake_torch,
     )
 
     ctrl = ProfilerController()
-    ctrl.start(steps=2, trigger="test")
+    ctrl.start(steps=2, trigger="test", analysis="roofline")
     status = ctrl.status()
     assert status["running"] is True
     assert status["steps_target"] == 2
     assert status["trigger"] == "test"
+    assert status["analysis"] == "roofline"
 
 
 def test_double_start_raises(monkeypatch):
-    import torch.optim.optimizer as torch_optim
-
     mock_profile = MagicMock()
+    fake_torch = _install_fake_torch(monkeypatch)
     monkeypatch.setattr(
         "probing.profiling.torch_profiler.controller.HAS_TORCH",
         True,
     )
-    mock_torch = MagicMock()
-    mock_torch.cuda.is_available.return_value = False
-    mock_torch.profiler.profile.return_value = mock_profile
-    monkeypatch.setattr("probing.profiling.torch_profiler.controller.torch", mock_torch)
+    fake_torch.profiler.profile.return_value = mock_profile
     monkeypatch.setattr(
-        torch_optim,
-        "register_optimizer_step_post_hook",
-        MagicMock(return_value=1),
+        "probing.profiling.torch_profiler.controller.torch",
+        fake_torch,
     )
 
     ctrl = ProfilerController()

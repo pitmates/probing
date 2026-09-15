@@ -399,18 +399,21 @@ def get_pytorch_timeline() -> str:
 
 
 @ext_handler("pythonext", "pytorch/profile")
-def start_pytorch_profile(steps: int = 1, trigger: str = "http") -> str:
+def start_pytorch_profile(
+    steps: int = 1, trigger: str = "http", analysis: str = "none"
+) -> str:
     """Start PyTorch global profiler (legacy path)."""
     try:
         from probing.repl.torch_magic import TorchMagic
 
         torch_magic = TorchMagic(None)
-        torch_magic._start_global_profiler(steps, trigger=trigger)
+        torch_magic._start_global_profiler(steps, trigger=trigger, analysis=analysis)
         return json.dumps(
             {
                 "success": True,
                 "message": f"Global profiler started for {steps} step(s)",
                 "trigger": trigger,
+                "analysis": analysis,
             }
         )
     except Exception as e:
@@ -420,9 +423,11 @@ def start_pytorch_profile(steps: int = 1, trigger: str = "http") -> str:
 
 
 @ext_handler("pythonext", "pytorch/profile/start")
-def start_pytorch_profile_v2(steps: int = 1, trigger: str = "http") -> str:
+def start_pytorch_profile_v2(
+    steps: int = 1, trigger: str = "http", analysis: str = "none"
+) -> str:
     """Start on-demand torch.profiler capture."""
-    return start_pytorch_profile(steps=steps, trigger=trigger)
+    return start_pytorch_profile(steps=steps, trigger=trigger, analysis=analysis)
 
 
 @ext_handler("pythonext", "pytorch/profile/stop")

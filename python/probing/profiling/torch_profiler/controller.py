@@ -15,7 +15,12 @@ import threading
 import time
 from typing import Any, Optional
 
-from .adaptor import compile_from_profiler
+from .adaptor import (
+    _roofline_metrics,
+    compile_from_profiler,
+    roofline_analysis_enabled,
+    selected_profiler_analysis,
+)
 from .session_store import CaptureRecord, get_session_store
 
 logger = logging.getLogger(__name__)
@@ -49,6 +54,7 @@ class ProfilerController:
         self._steps_target = 0
         self._step_count = 0
         self._trigger = ""
+        self._analysis = "none"
         self._started_at_us = 0
         self._cached_timeline: Optional[str] = None
         self._timeline_exported = False
@@ -67,10 +73,13 @@ class ProfilerController:
                 "steps_target": self._steps_target,
                 "steps_completed": self._step_count,
                 "trigger": self._trigger,
+                "analysis": self._analysis,
                 "latest_capture_id": latest,
             }
 
-    def start(self, *, steps: int = 1, trigger: str = "manual") -> None:
+    def start(
+        self, *, steps: int = 1, trigger: str = "manual", analysis: str | None = None
+    ) -> None:
         if not HAS_TORCH:
             raise ImportError("PyTorch is not installed")
 
@@ -81,6 +90,7 @@ class ProfilerController:
             self._steps_target = steps
             self._step_count = 0
             self._trigger = trigger
+            self._analysis = selected_profiler_analysis(analysis)
             self._started_at_us = _now_us()
             self._cached_timeline = None
             self._timeline_exported = False
@@ -90,13 +100,27 @@ class ProfilerController:
             if torch.cuda.is_available():
                 activities.append(torch.profiler.ProfilerActivity.CUDA)
 
-            self._profiler = torch.profiler.profile(
-                record_shapes=True,
-                with_stack=True,
-                with_flops=True,
-                activities=activities,
-                on_trace_ready=None,
-            )
+            profile_kwargs: dict[str, Any] = {
+                "record_shapes": True,
+                "with_stack": True,
+                "with_flops": True,
+                "activities": activities,
+                "on_trace_ready": None,
+            }
+            if roofline_analysis_enabled(analysis):
+                experimental_config = getattr(
+                    torch.profiler, "_ExperimentalConfig", None
+                )
+                if experimental_config is None:
+                    raise RuntimeError(
+                        "roofline counters require a PyTorch version with "
+                        "torch.profiler._ExperimentalConfig"
+                    )
+                profile_kwargs["experimental_config"] = experimental_config(
+                    _params=[("profile_device", "1")]
+                    + [("metrics", metric) for metric in _roofline_metrics()]
+                )
+            self._profiler = torch.profiler.profile(**profile_kwargs)
 
             from torch.optim.optimizer import register_optimizer_step_post_hook
 
@@ -221,19 +245,28 @@ class ProfilerController:
                     status = "failed"
                     error = error or str(exc)
             try:
-                capture, hotspots = compile_from_profiler(
+                (
+                    capture,
+                    hotspots,
+                    counters,
+                    rooflines,
+                    roofline_quality,
+                ) = compile_from_profiler(
                     profiler,
                     trigger=trigger,
                     steps_profiled=steps_done,
                     started_at_us=started,
                     status=status,
                     error=error,
+                    analysis=self._analysis,
                 )
-                get_session_store().add_capture(capture, hotspots)
+                get_session_store().add_capture(capture, hotspots, counters, rooflines)
                 logger.info(
-                    "profile capture %s: %d hotspots, step=%d status=%s",
+                    "profile capture %s: %d hotspots, %d counters, roofline=%s, step=%d status=%s",
                     capture.capture_id,
                     len(hotspots),
+                    len(counters),
+                    roofline_quality,
                     capture.local_step,
                     capture.status,
                 )

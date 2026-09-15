@@ -6,6 +6,7 @@ hooks or memtables. Starting either path does not configure the other.
 """
 
 from .controller import ProfilerController, get_controller, profiler_status
+from .sql import profile_counter_rows, profile_roofline_rows
 from .session_store import SessionStore, get_session_store
 
 __all__ = [

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from probing.profiling.torch_profiler.session_store import CaptureRecord, HotspotRecord
+from probing.profiling.torch_profiler.session_store import (
+    CaptureRecord,
+    CounterRecord,
+    HotspotRecord,
+    RooflineRecord,
+)
 from probing.profiling.torch_profiler.session_store import get_session_store
 from probing.profiling.torch_profiler import sql as profile_sql
 
@@ -29,6 +34,27 @@ def test_profile_rows_roundtrip():
                 pct_of_capture=0.8,
             )
         ],
+        [
+            CounterRecord(
+                capture_id="cap1",
+                kernel_name="gemm",
+                op_name="aten::linear",
+                calls=2,
+                flops=100,
+                dram_bytes=200,
+            )
+        ],
+        [
+            RooflineRecord(
+                capture_id="cap1",
+                kernel_name="gemm",
+                op_name="aten::linear",
+                calls=2,
+                flops=100,
+                dram_bytes=200,
+                arithmetic_intensity=0.5,
+            )
+        ],
     )
 
     captures = profile_sql.profile_capture_rows()
@@ -40,3 +66,8 @@ def test_profile_rows_roundtrip():
     assert len(hotspots) == 1
     assert hotspots[0]["bucket_name"] == "gemm"
     assert hotspots[0]["pct_of_capture"] == 0.8
+    counters = profile_sql.profile_counter_rows()
+    rooflines = profile_sql.profile_roofline_rows()
+    assert counters[0]["kernel_name"] == "gemm"
+    assert counters[0]["flops"] == 100
+    assert rooflines[0]["arithmetic_intensity"] == 0.5

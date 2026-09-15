@@ -71,6 +71,8 @@ pub struct GpuDeviceInfo {
     /// SoC marketing name when available, e.g. "Apple M4 Pro".
     pub chip: Option<String>,
     pub registry_id: Option<u64>,
+    pub roofline_peak_flops: Option<f64>,
+    pub roofline_peak_bytes_per_sec: Option<f64>,
 }
 
 /// One periodic sample for a device (memory + optional utilization).

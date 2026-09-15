@@ -78,6 +78,8 @@ impl AppleSiliconBackend {
             },
             chip: self.chip.clone(),
             registry_id: Some(dev.registry_id),
+            roofline_peak_flops: None,
+            roofline_peak_bytes_per_sec: None,
         }
     }
 }

@@ -28,6 +28,13 @@ fn profile_capture_schema() -> SchemaRef {
         Field::new("truncated", DataType::Int64, true),
         Field::new("event_count", DataType::Int64, true),
         Field::new("error", DataType::Utf8, true),
+        Field::new("analysis", DataType::Utf8, true),
+        Field::new("roofline_quality", DataType::Utf8, true),
+        Field::new("roofline_counter_events", DataType::Int64, true),
+        Field::new("roofline_associated_kernels", DataType::Int64, true),
+        Field::new("roofline_unassociated_kernels", DataType::Int64, true),
+        Field::new("roofline_missing_metrics", DataType::Utf8, true),
+        Field::new("roofline_parser_version", DataType::Utf8, true),
     ]))
 }
 
@@ -108,6 +115,13 @@ pub fn profile_capture_batches() -> TableResult<Vec<RecordBatch>> {
         let mut truncated = Vec::new();
         let mut event_count = Vec::new();
         let mut error = Vec::new();
+        let mut analysis = Vec::new();
+        let mut roofline_quality = Vec::new();
+        let mut roofline_counter_events = Vec::new();
+        let mut roofline_associated_kernels = Vec::new();
+        let mut roofline_unassociated_kernels = Vec::new();
+        let mut roofline_missing_metrics = Vec::new();
+        let mut roofline_parser_version = Vec::new();
 
         for item in rows.iter() {
             let dict = item
@@ -128,6 +142,13 @@ pub fn profile_capture_batches() -> TableResult<Vec<RecordBatch>> {
             truncated.push(dict_opt_i64(dict, "truncated"));
             event_count.push(dict_opt_i64(dict, "event_count"));
             error.push(dict_opt_str(dict, "error"));
+            analysis.push(dict_opt_str(dict, "analysis"));
+            roofline_quality.push(dict_opt_str(dict, "roofline_quality"));
+            roofline_counter_events.push(dict_opt_i64(dict, "roofline_counter_events"));
+            roofline_associated_kernels.push(dict_opt_i64(dict, "roofline_associated_kernels"));
+            roofline_unassociated_kernels.push(dict_opt_i64(dict, "roofline_unassociated_kernels"));
+            roofline_missing_metrics.push(dict_opt_str(dict, "roofline_missing_metrics"));
+            roofline_parser_version.push(dict_opt_str(dict, "roofline_parser_version"));
         }
 
         let columns: Vec<ArrayRef> = vec![
@@ -146,6 +167,13 @@ pub fn profile_capture_batches() -> TableResult<Vec<RecordBatch>> {
             Arc::new(Int64Array::from(truncated)),
             Arc::new(Int64Array::from(event_count)),
             Arc::new(StringArray::from(error)),
+            Arc::new(StringArray::from(analysis)),
+            Arc::new(StringArray::from(roofline_quality)),
+            Arc::new(Int64Array::from(roofline_counter_events)),
+            Arc::new(Int64Array::from(roofline_associated_kernels)),
+            Arc::new(Int64Array::from(roofline_unassociated_kernels)),
+            Arc::new(StringArray::from(roofline_missing_metrics)),
+            Arc::new(StringArray::from(roofline_parser_version)),
         ];
         Ok(vec![try_record_batch(schema, columns)?])
     })
@@ -222,6 +250,9 @@ mod tests {
             "status",
             "truncated",
             "event_count",
+            "analysis",
+            "roofline_quality",
+            "roofline_parser_version",
         ] {
             assert!(schema.field_with_name(col).is_ok(), "missing column {col}");
         }

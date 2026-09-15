@@ -28,6 +28,8 @@ use crate::python::enable_crash_handler;
 use crate::python::enable_monitoring;
 
 mod exttbls;
+mod profile_counter;
+mod profile_roofline;
 mod profile_sql;
 mod tbls;
 

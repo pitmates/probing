@@ -27,6 +27,8 @@ impl CustomTable for GpuDevicesTable {
             Field::new("compute_capability", DataType::Utf8, true),
             Field::new("registry_id", DataType::Int64, true),
             Field::new("total_mem_bytes", DataType::Int64, false),
+            Field::new("roofline_peak_flops", DataType::Utf8, true),
+            Field::new("roofline_peak_bytes_per_sec", DataType::Utf8, true),
         ]))
     }
 
@@ -45,6 +47,8 @@ impl CustomTable for GpuDevicesTable {
         let mut compute_caps: Vec<Option<&str>> = Vec::with_capacity(devices.len());
         let mut registry_ids: Vec<Option<i64>> = Vec::with_capacity(devices.len());
         let mut total_mem = Vec::with_capacity(devices.len());
+        let mut roofline_peak_flops: Vec<Option<String>> = Vec::with_capacity(devices.len());
+        let mut roofline_peak_bytes: Vec<Option<String>> = Vec::with_capacity(devices.len());
 
         for device in &devices {
             backends.push(device.backend.as_str());
@@ -56,6 +60,12 @@ impl CustomTable for GpuDevicesTable {
             compute_caps.push(device.compute_capability.as_deref());
             registry_ids.push(device.registry_id.map(|v| v as i64));
             total_mem.push(device.total_mem_bytes as i64);
+            roofline_peak_flops.push(device.roofline_peak_flops.map(|v| v.to_string()));
+            roofline_peak_bytes.push(
+                device
+                    .roofline_peak_bytes_per_sec
+                    .map(|v| v.to_string()),
+            );
         }
 
         let batch = RecordBatch::try_new(
@@ -70,6 +80,8 @@ impl CustomTable for GpuDevicesTable {
                 Arc::new(StringArray::from(compute_caps)),
                 Arc::new(Int64Array::from(registry_ids)),
                 Arc::new(Int64Array::from(total_mem)),
+                Arc::new(StringArray::from(roofline_peak_flops)),
+                Arc::new(StringArray::from(roofline_peak_bytes)),
             ],
         );
 

@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import probing
-from probing.profiling.torch_profiler.session_store import CaptureRecord, HotspotRecord
+from probing.profiling.torch_profiler.session_store import (
+    CaptureRecord,
+    CounterRecord,
+    HotspotRecord,
+    RooflineRecord,
+)
 from probing.profiling.torch_profiler.session_store import get_session_store
 
 
@@ -48,6 +53,47 @@ def _seed_capture() -> str:
                 calls=2,
                 pct_of_capture=0.25,
             ),
+        ],
+        [
+            CounterRecord(
+                capture_id="sql-cap",
+                local_step=11,
+                global_step=11,
+                rank=0,
+                role="dp=0",
+                kernel_name="volta_sgemm",
+                op_name="aten::mm",
+                top_level_op="aten::mm",
+                bottom_level_op="aten::mm",
+                op_stack='["aten::mm"]',
+                calls=4,
+                duration_us=1500,
+                flops=1200,
+                dram_bytes=300,
+            )
+        ],
+        [
+            RooflineRecord(
+                capture_id="sql-cap",
+                local_step=11,
+                global_step=11,
+                rank=0,
+                role="dp=0",
+                op_name="aten::mm",
+                kernel_name="volta_sgemm",
+                calls=4,
+                self_duration_us=1500,
+                flops=1200,
+                dram_bytes=300,
+                arithmetic_intensity=4.0,
+                achieved_flops=800000.0,
+                achieved_bytes_per_sec=200000.0,
+                peak_flops=1000.0,
+                peak_bytes_per_sec=100.0,
+                boundedness=0.8,
+                bottleneck="memory",
+                data_quality="ok",
+            )
         ],
     )
     return "sql-cap"
@@ -99,3 +145,23 @@ def test_profile_capture_sql_q8_quality():
     assert row["status"] == "completed"
     assert int(row["event_count"]) == 3
     assert int(row["truncated"]) == 0
+
+
+def test_profile_roofline_sql_q1_summary():
+    _seed_capture()
+    df = probing.query(
+        """
+        SELECT
+          op_name,
+          sum(flops) AS total_flops,
+          sum(flops) / nullif(sum(dram_bytes), 0) AS arithmetic_intensity,
+          bottleneck,
+          data_quality
+        FROM python.profile_roofline
+        WHERE capture_id = 'sql-cap'
+        GROUP BY op_name, bottleneck, data_quality
+        """
+    )
+    assert len(df) == 1
+    assert df.iloc[0]["op_name"] == "aten::mm"
+    assert float(df.iloc[0]["arithmetic_intensity"]) == 4.0

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from dataclasses import dataclass, field
@@ -34,6 +35,13 @@ class CaptureRecord:
     truncated: bool = False
     event_count: int = 0
     error: str = ""
+    analysis: str = "none"
+    roofline_quality: str = "unavailable"
+    roofline_counter_events: int = 0
+    roofline_associated_kernels: int = 0
+    roofline_unassociated_kernels: int = 0
+    roofline_missing_metrics: str = "[]"
+    roofline_parser_version: str = ""
 
 
 @dataclass
@@ -52,28 +60,83 @@ class HotspotRecord:
 
 
 @dataclass
+class CounterRecord:
+    capture_id: str
+    local_step: int = -1
+    global_step: int = -1
+    rank: int = -1
+    role: str = ""
+    kernel_name: str = ""
+    op_name: str = ""
+    top_level_op: str = ""
+    bottom_level_op: str = ""
+    op_stack: str = "[]"
+    calls: int = 0
+    duration_us: int = 0
+    flops: int = 0
+    dram_bytes: int = 0
+    metrics: str = "{}"
+
+
+@dataclass
+class RooflineRecord:
+    capture_id: str
+    local_step: int = -1
+    global_step: int = -1
+    rank: int = -1
+    role: str = ""
+    op_name: str = ""
+    kernel_name: str = ""
+    calls: int = 0
+    self_duration_us: int = 0
+    flops: int = 0
+    dram_bytes: int = 0
+    arithmetic_intensity: float | None = None
+    achieved_flops: float | None = None
+    achieved_bytes_per_sec: float | None = None
+    peak_flops: float | None = None
+    peak_bytes_per_sec: float | None = None
+    peak_flops_kind: str = "fp16_tensor_dense"
+    boundedness: float | None = None
+    bottleneck: str = "unknown"
+    data_quality: str = "partial"
+
+
+@dataclass
 class SessionStore:
     """Bounded in-memory captures + hotspot fact rows."""
 
     max_sessions: int = field(default_factory=_max_sessions)
     _captures: list[CaptureRecord] = field(default_factory=list)
     _hotspots: list[HotspotRecord] = field(default_factory=list)
+    _counters: list[CounterRecord] = field(default_factory=list)
+    _rooflines: list[RooflineRecord] = field(default_factory=list)
     _lock: threading.RLock = field(default_factory=threading.RLock)
 
     def add_capture(
         self,
         capture: CaptureRecord,
         hotspots: list[HotspotRecord],
+        counters: list[CounterRecord] | None = None,
+        rooflines: list[RooflineRecord] | None = None,
     ) -> None:
         with self._lock:
             self._captures.append(capture)
             self._hotspots.extend(hotspots)
+            self._counters.extend(counters or [])
+            self._rooflines.extend(rooflines or [])
             overflow = len(self._captures) - self.max_sessions
             if overflow > 0:
                 drop_ids = {c.capture_id for c in self._captures[:overflow]}
                 self._captures = self._captures[overflow:]
                 self._hotspots = [
                     h for h in self._hotspots if h.capture_id not in drop_ids
+                ]
+                self._counters = [
+                    c for c in self._counters if c.capture_id not in drop_ids
+                ]
+                self._rooflines = [
+                    r for r in self._rooflines if r.capture_id not in drop_ids
                 ]
 
     def captures(self) -> list[CaptureRecord]:
@@ -83,6 +146,14 @@ class SessionStore:
     def hotspots(self) -> list[HotspotRecord]:
         with self._lock:
             return list(self._hotspots)
+
+    def counters(self) -> list[CounterRecord]:
+        with self._lock:
+            return list(self._counters)
+
+    def rooflines(self) -> list[RooflineRecord]:
+        with self._lock:
+            return list(self._rooflines)
 
     def latest_capture_id(self) -> Optional[str]:
         with self._lock:
@@ -94,6 +165,8 @@ class SessionStore:
         with self._lock:
             self._captures.clear()
             self._hotspots.clear()
+            self._counters.clear()
+            self._rooflines.clear()
 
 
 _STORE: Optional[SessionStore] = None
@@ -114,3 +187,55 @@ def reset_session_store_for_tests() -> None:
     with _STORE_LOCK:
         if _STORE is not None:
             _STORE.clear()
+
+
+def roofline_peaks() -> tuple[float | None, float | None]:
+    raw = os.environ.get("PROBING_TORCH_ROOFLINE_PEAKS_JSON", "").strip()
+    if not raw:
+        return _gpu_device_peaks()
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("peaks JSON must be an object")
+        entry = parsed.get("fp16_tensor_dense")
+        if not isinstance(entry, dict):
+            raise ValueError("peaks JSON missing fp16_tensor_dense")
+        peak_flops = entry.get("peak_flops")
+        peak_bytes = entry.get("peak_bytes_per_sec")
+        if not isinstance(peak_flops, (int, float)) or not isinstance(
+            peak_bytes, (int, float)
+        ):
+            raise ValueError("peaks must be numeric")
+        unknown = set(parsed) - {"fp16_tensor_dense"}
+        if unknown:
+            import logging
+
+            logging.getLogger(__name__).debug(
+                "ignore unsupported roofline peak kinds: %s", sorted(unknown)
+            )
+        return float(peak_flops), float(peak_bytes)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "invalid PROBING_TORCH_ROOFLINE_PEAKS_JSON: %s", exc
+        )
+        return None, None
+
+
+def _gpu_device_peaks() -> tuple[float | None, float | None]:
+    try:
+        import probing
+
+        frame = probing.query(
+            "SELECT roofline_peak_flops, roofline_peak_bytes_per_sec "
+            "FROM gpu.devices ORDER BY device_id LIMIT 1"
+        )
+        if frame is None or len(frame) == 0:
+            return None, None
+        row = frame.iloc[0]
+        peak_flops = float(row["roofline_peak_flops"])
+        peak_bytes = float(row["roofline_peak_bytes_per_sec"])
+        return peak_flops, peak_bytes
+    except Exception:
+        return None, None

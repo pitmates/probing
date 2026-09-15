@@ -1,6 +1,6 @@
 ﻿# 算子 Roofline 建模
 
-状态：设计目标，尚未实现。
+状态：已实现（CUPTI 环境依赖能力探测；E2E 需支持 CUPTI Range Profiler）。
 
 本方案描述 Probing 如何在现有短窗口 `torch.profiler` 路径上增加算子级
 roofline 统计。建模方法参考 Holistic Trace Analysis（HTA）的

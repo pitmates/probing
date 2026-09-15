@@ -1,0 +1,79 @@
+apiVersion: probing.dev/v1
+kind: Skill
+
+metadata:
+  id: operator_roofline
+  title: "算子 Roofline 分析"
+  title_en: "Operator roofline analysis"
+  category: performance
+  tags: [roofline, gpu, kernel, operator]
+  triggers:
+    keywords:
+      zh: ["roofline", "计算受限", "访存受限", "算子瓶颈"]
+      en: ["roofline", "compute bound", "memory bound"]
+  docs: |
+    分析短窗口 torch.profiler capture 的算子/kernel 计算与访存瓶颈。
+    需要在启动 capture 时选择 analysis=roofline。
+
+spec:
+  parameters:
+    - name: operator_limit
+      type: integer
+      default: 20
+      description: "Top operators to report"
+
+  steps:
+    - id: data_availability
+      title: "Roofline 数据可用性"
+      type: sql
+      sql: |
+        SELECT capture_id, count(*) AS rows, count_if(data_quality = 'ok') AS ok_rows
+        FROM python.profile_roofline
+        GROUP BY capture_id
+        ORDER BY capture_id DESC
+      on_empty: fail
+      empty_message: "无 profile_roofline 数据 — 使用 analysis=roofline 启动短窗口 profiler capture"
+
+    - id: roofline_summary
+      title: "算子 Roofline 汇总"
+      type: sql
+      sql: |
+        WITH latest_capture AS (
+          SELECT capture_id
+          FROM python.profile_capture
+          WHERE status = 'completed'
+          ORDER BY ended_at_us DESC
+          LIMIT 1
+        )
+        SELECT
+          op_name,
+          count(DISTINCT kernel_name) AS kernels,
+          sum(flops) AS total_flops,
+          sum(dram_bytes) AS total_dram_bytes,
+          sum(flops) / nullif(sum(dram_bytes), 0) AS arithmetic_intensity,
+          sum(flops) * 1e6 / nullif(sum(self_duration_us), 0) AS achieved_flops
+        FROM python.profile_roofline
+        WHERE capture_id IN (SELECT capture_id FROM latest_capture)
+        GROUP BY op_name
+        ORDER BY total_flops DESC
+        LIMIT {operator_limit}
+      on_empty: warn
+      empty_message: "最新 capture 没有 roofline 行"
+
+    - id: bottleneck_ops
+      title: "瓶颈分类"
+      type: sql
+      sql: |
+        SELECT
+          op_name,
+          bottleneck,
+          count(*) AS rows,
+          sum(flops) AS total_flops,
+          sum(dram_bytes) AS total_dram_bytes
+        FROM python.profile_roofline
+        WHERE data_quality = 'ok'
+        GROUP BY op_name, bottleneck
+        ORDER BY total_flops DESC
+        LIMIT {operator_limit}
+      on_empty: warn
+      empty_message: "没有质量为 ok 的 roofline 行"

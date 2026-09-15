@@ -120,6 +120,82 @@ Per-step wall-clock duration for TorchProbe overhead monitoring (probed vs shado
 
 ---
 
+### `python.profile_capture` {#python-profile_capture}
+
+On-demand `torch.profiler` capture anchor and quality metadata.
+
+| Column | Description |
+|--------|-------------|
+| `capture_id` | Capture id and join key |
+| `local_step` | Training step at finalize |
+| `global_step` | Global training step |
+| `rank` | `torch.distributed` rank |
+| `trigger` | Capture trigger |
+| `status` | `completed` or `failed` |
+| `event_count` | Raw profiler event count |
+| `error` | Finalization error |
+| `analysis` | Capture-selected analysis features |
+| `roofline_quality` | Roofline result quality |
+| `roofline_counter_events` | CUPTI counter events parsed |
+| `roofline_associated_kernels` | Counter kernels associated with an operator |
+| `roofline_unassociated_kernels` | Counter kernels without an operator association |
+| `roofline_missing_metrics` | Missing required metric names JSON |
+| `roofline_parser_version` | Parser and HTA alignment version |
+
+---
+
+### `python.profile_hotspot` {#python-profile_hotspot}
+
+Aggregated kernel/operator time buckets for a profiler capture.
+
+| Column | Description |
+|--------|-------------|
+| `capture_id` | FK to `python.profile_capture` |
+| `bucket_kind` | Bucket kind |
+| `bucket_name` | Kernel or operator name |
+| `self_us` | Self time |
+| `calls` | Invocation count |
+| `pct_of_capture` | Share of capture wall time |
+
+---
+
+### `python.profile_counter` {#python-profile_counter}
+
+Kernel-level CUPTI counter facts. Requires `analysis=roofline`.
+
+| Column | Description |
+|--------|-------------|
+| `capture_id` | FK to `python.profile_capture` |
+| `kernel_name` | GPU kernel name |
+| `op_name` | Associated PyTorch CPU operator |
+| `op_stack` | Local operator stack JSON |
+| `calls` | Kernel invocation count |
+| `duration_us` | Kernel duration |
+| `flops` | FLOPs from SASS counters |
+| `dram_bytes` | DRAM bytes read + written |
+| `metrics` | Extra requested metrics JSON |
+
+---
+
+### `python.profile_roofline` {#python-profile_roofline}
+
+Operator/kernel roofline conclusions. Requires `analysis=roofline`.
+
+| Column | Description |
+|--------|-------------|
+| `capture_id` | FK to `python.profile_capture` |
+| `op_name` | Associated PyTorch CPU operator |
+| `kernel_name` | GPU kernel name |
+| `arithmetic_intensity` | FLOPs / DRAM bytes |
+| `achieved_flops` | FLOPs per second |
+| `achieved_bytes_per_sec` | DRAM bytes per second |
+| `boundedness` | Minimum compute/memory efficiency |
+| `bottleneck` | `compute`, `memory`, `balanced`, or `unknown` |
+| `data_quality` | `ok`, `partial`, `truncated`, or `unavailable` |
+| `peak_flops_kind` | Peak reference kind (`fp16_tensor_dense` in v1) |
+
+---
+
 ### `python.comm_collective` {#python-comm_collective}
 
 `torch.distributed` collective calls (all_reduce, broadcast, …).
