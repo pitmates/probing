@@ -47,12 +47,23 @@ Aggregation and format conversion happen only after the window closes. This keep
 prefers op/kernel aggregates; when aggregation is unavailable it preserves a bounded raw-event
 fallback and records `truncated` explicitly instead of presenting partial data as complete.
 
-One capture produces two representations because machine analysis and human inspection need
+One capture produces several representations because machine analysis and human inspection need
 different shapes. `python.profile_capture` and `python.profile_hotspot` are virtual tables over a
 bounded session store, suitable for filtering, aggregation, and cross-rank comparison through
 `global.python.profile_hotspot`. The complete `traceEvents` structure remains a timeline for the
 Web UI. It is not expanded into MEMT rows: copying every event would amplify hot-path writes, while
 capture lifetime is fundamentally different from continuous telemetry.
+
+A capture may select roofline as a short-window analysis feature, for example
+`GET /apis/pythonext/pytorch/profile/start?steps=1&analysis=roofline`. Such a capture also
+reads raw `profiler.events()` during finalize and derives `python.profile_counter` (kernel-level
+CUPTI counter facts) and `python.profile_roofline` (operator/kernel roofline conclusions). This
+path is deliberately separate from `key_averages()`: counters and operator association require
+raw event args and are materialized once at capture close. The analysis feature belongs to the
+capture rather than to `PROBING_TORCH_PROFILING`, so enabling continuous TorchProbe sampling
+never implicitly enables high-overhead CUPTI counters; future capture analyses can share the
+same `analysis` parameter instead of growing one process-global flag per tool. The full design
+is in [Operator Roofline](roofline.md).
 
 ### TorchProbe as a long-running step state machine
 

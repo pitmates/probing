@@ -155,6 +155,7 @@ nav:
       - Extensibility: design/extensibility.md
     - Collectors & Profiling:
       - Profiling & Tracing: design/profiling.md
+      - Operator Roofline: design/roofline.md
       - NCCL Profiler: design/nccl-profiler.md
       - Overhead: design/overhead.md
     - Distributed Query & Analysis:

@@ -40,11 +40,20 @@ TorchProbe 自身，不能被误读为 Kineto 的成本。
 结束处理优先产生 op/kernel 聚合；聚合不可用时保留有界原始事件，并显式记录 `truncated`，不把
 不完整结果伪装成完整结果。
 
-同一份 capture 派生出两种视图，是为了分离“机器分析”和“人工查看”。
+同一份 capture 可以派生出多种视图，是为了分离“机器分析”和“人工查看”。
 `python.profile_capture` 与 `python.profile_hotspot` 是有界 session store 上的虚拟表，供本机或
 `global.python.profile_hotspot` 做过滤、聚合和跨 rank 比较；完整 `traceEvents` 保持时间线结构，
 交给 Web 可视化。原始时间线不展开写入 MEMT，因为逐事件复制会放大写入成本，而 session 生命周期
 也不同于长期遥测数据。
+
+capture 可以把 roofline 选为短窗口分析能力，例如
+`GET /apis/pythonext/pytorch/profile/start?steps=1&analysis=roofline`。这种 capture 在 finalize
+时额外读取原始 `profiler.events()`，并派生 `python.profile_counter`（kernel 级 CUPTI counter
+事实）与 `python.profile_roofline`（算子/kernel roofline 结论）。该路径刻意独立于
+`key_averages()`：counter 与算子关联依赖原始事件 args，只在 capture 关闭时物化一次。
+分析能力属于单次 capture，而不是 `PROBING_TORCH_PROFILING`，因此开启长期 TorchProbe 采样
+不会隐式开启高开销 CUPTI counter；后续 capture 分析能力可以复用同一个 `analysis` 参数，
+而不是为每类工具增加一个进程级开关。完整设计见[算子 Roofline 建模](roofline.zh.md)。
 
 ### TorchProbe：可长期运行的 step 状态机
 

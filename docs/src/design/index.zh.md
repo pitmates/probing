@@ -38,6 +38,7 @@
 | 文档 | 状态 | 说明 |
 |------|------|------|
 | [性能分析与 Tracing](profiling.zh.md) | 当前 | TorchProbe、Span/Phase、Python/Native 堆栈与系统采集 |
+| [算子 Roofline 建模](roofline.zh.md) | 目标设计 | capture 级 CUPTI 计数、算子关联与计算/访存瓶颈分类 |
 | [NCCL Profiler](nccl-profiler.zh.md) | 当前 | 插件 ABI、事件层次和等待分解 |
 | [开销测量](overhead.zh.md) | 当前 | shadow step、统计口径、回归不变量和离线基准 |
 
