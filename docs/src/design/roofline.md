@@ -107,7 +107,7 @@ Python 侧物化为 `python.profile_counter` 与 `python.profile_roofline`。前
 | `FLOPs_eff` | `achieved_flops / peak_flops` |
 | `Bytes_eff` | `achieved_bytes_per_sec / peak_bytes_per_sec` |
 | `boundedness` | `min(FLOPs_eff, Bytes_eff)` |
-| `bottleneck` | compute 或 memory 中效率较低者 |
+| `bottleneck` | 效率更接近峰值的一侧：`FLOPs_eff > Bytes_eff` 为 compute，反之为 memory |
 
 在默认阈值 `0.9` 下，`|FLOPs_eff - Bytes_eff| < 0.1` 时标记 `balanced`。
 若任一 peak 缺失，则 `boundedness` 设为 `NULL`，`bottleneck` 标记为
@@ -115,12 +115,8 @@ Python 侧物化为 `python.profile_counter` 与 `python.profile_roofline`。前
 
 ### 4.3 平台峰值
 
-`python.gpu_devices` 新增峰值配置列（`utf8` JSON）：
-
-| 列 | 说明 |
-|----|------|
-| `roofline_peak_flops` | 理论峰值 FLOPs/s |
-| `roofline_peak_bytes_per_sec` | 理论峰值 DRAM 带宽 |
+第一版仅通过 `PROBING_TORCH_ROOFLINE_PEAKS_JSON` 显式配置平台峰值，不在
+Python collector 内查询 GPU collector，避免跨 collector 直接调用。
 
 第一版不做按 kernel 精度自动匹配峰值。默认参考口径为
 `fp16_tensor_dense`；稀疏 Tensor Core、INT8、纯 FP32 或 double 精度 kernel
@@ -128,11 +124,7 @@ Python 侧物化为 `python.profile_counter` 与 `python.profile_roofline`。前
 `PROBING_TORCH_ROOFLINE_PEAKS_JSON` 配置多个精度档位，再由 kernel 名 /
 SASS 指令组成推断档位。
 
-来源优先级：
-
-1. `PROBING_TORCH_ROOFLINE_PEAKS_JSON`（显式配置）；
-2. `python.gpu_devices` 表；
-3. 无平台值时降级为部分 roofline，仅输出 FLOPs / AI，不输出效率结论。
+若未配置该环境变量，则降级为部分 roofline，仅输出 FLOPs / AI，不输出效率结论。
 
 `PROBING_TORCH_ROOFLINE_PEAKS_JSON` 第一版 schema 固定为：
 

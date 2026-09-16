@@ -27,10 +27,14 @@ spec:
       title: "Roofline 数据可用性"
       type: sql
       sql: |
-        SELECT capture_id, count(*) AS rows, count_if(data_quality = 'ok') AS ok_rows
-        FROM python.profile_roofline
-        GROUP BY capture_id
-        ORDER BY capture_id DESC
+        SELECT
+          r.capture_id,
+          count(*) AS rows,
+          count_if(r.data_quality = 'ok') AS ok_rows
+        FROM python.profile_roofline AS r
+        JOIN python.profile_capture AS c ON c.capture_id = r.capture_id
+        GROUP BY r.capture_id, c.ended_at_us
+        ORDER BY c.ended_at_us DESC
       on_empty: fail
       empty_message: "无 profile_roofline 数据 — 使用 analysis=roofline 启动短窗口 profiler capture"
 
@@ -60,8 +64,8 @@ spec:
       on_empty: warn
       empty_message: "最新 capture 没有 roofline 行"
 
-    - id: bottleneck_ops
-      title: "瓶颈分类"
+    - id: compute_bottleneck_ops
+      title: "计算受限算子"
       type: sql
       sql: |
         SELECT
@@ -72,8 +76,43 @@ spec:
           sum(dram_bytes) AS total_dram_bytes
         FROM python.profile_roofline
         WHERE data_quality = 'ok'
-        GROUP BY op_name, bottleneck
+        WHERE bottleneck = 'compute'
+        GROUP BY op_name
         ORDER BY total_flops DESC
         LIMIT {operator_limit}
       on_empty: warn
-      empty_message: "没有质量为 ok 的 roofline 行"
+      empty_message: "没有计算受限的 roofline 行"
+
+    - id: memory_bottleneck_ops
+      title: "访存受限算子"
+      type: sql
+      sql: |
+        SELECT
+          op_name,
+          count(*) AS rows,
+          sum(flops) AS total_flops,
+          sum(dram_bytes) AS total_dram_bytes
+        FROM python.profile_roofline
+        WHERE data_quality = 'ok' AND bottleneck = 'memory'
+        GROUP BY op_name
+        ORDER BY total_dram_bytes DESC
+        LIMIT {operator_limit}
+      on_empty: warn
+      empty_message: "没有访存受限的 roofline 行"
+
+    - id: balanced_ops
+      title: "平衡算子"
+      type: sql
+      sql: |
+        SELECT
+          op_name,
+          count(*) AS rows,
+          sum(flops) AS total_flops,
+          sum(dram_bytes) AS total_dram_bytes
+        FROM python.profile_roofline
+        WHERE data_quality = 'ok' AND bottleneck = 'balanced'
+        GROUP BY op_name
+        ORDER BY total_flops DESC
+        LIMIT {operator_limit}
+      on_empty: warn
+      empty_message: "没有近似平衡的 roofline 行"

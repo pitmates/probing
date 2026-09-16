@@ -24,6 +24,18 @@ def test_profile_start_handler_success():
     )
 
 
+def test_profile_start_handler_falls_back_to_environment_default(monkeypatch):
+    monkeypatch.setenv("PROBING_TORCH_PROFILER_ANALYSIS", "roofline")
+    with patch.object(torch_magic, "TorchMagic") as mock_cls:
+        result = json.loads(
+            pythonext.handle_api_request("pytorch/profile/start", {"steps": "2"})
+        )
+    assert result["success"] is True
+    mock_cls.return_value._start_global_profiler.assert_called_once_with(
+        2, trigger="http", analysis=None
+    )
+
+
 def test_profile_status_handler():
     with patch(
         "probing.profiling.torch_profiler.profiler_status",

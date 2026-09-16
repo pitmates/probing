@@ -94,7 +94,6 @@ class ProfilerController:
             self._started_at_us = _now_us()
             self._cached_timeline = None
             self._timeline_exported = False
-            self._running = True
 
             activities = [torch.profiler.ProfilerActivity.CPU]
             if torch.cuda.is_available():
@@ -149,6 +148,7 @@ class ProfilerController:
                         controller._finalize_capture(status="failed", error=str(exc))
 
             self._hook_handle = register_optimizer_step_post_hook(profiler_step_hook)
+            self._running = True
 
     def stop(self) -> Optional[str]:
         """Stop early; returns capture_id when a capture was materialized."""

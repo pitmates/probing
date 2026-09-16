@@ -53,8 +53,6 @@ impl GpuBackend for NpuBackend {
                     memory_model: GpuMemoryModel::Dedicated,
                     chip,
                     registry_id: None,
-                    roofline_peak_flops: None,
-                    roofline_peak_bytes_per_sec: None,
                 }
             })
             .collect()

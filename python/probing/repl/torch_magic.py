@@ -245,7 +245,7 @@ Examples:
         return args
 
     def _start_global_profiler(
-        self, steps: int = 1, trigger: str = "http", analysis: str = "none"
+        self, steps: int = 1, trigger: str = "http", analysis: Optional[str] = None
     ) -> ProfilerController:
         """Start profiler (HTTP / legacy callers)."""
         if not HAS_TORCH:

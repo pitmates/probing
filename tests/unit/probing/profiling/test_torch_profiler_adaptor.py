@@ -22,6 +22,15 @@ from probing.profiling.torch_profiler.session_store import (
 
 
 @dataclass
+class _FakeTimeRange:
+    start: int
+    end: int
+
+    def elapsed_us(self) -> int:
+        return self.end - self.start
+
+
+@dataclass
 class _FakeEvent:
     key: str
     self_cuda_time_total: int = 0
@@ -31,6 +40,7 @@ class _FakeEvent:
     count: int = 1
     args: dict = field(default_factory=dict)
     id: int | None = None
+    time_range: _FakeTimeRange | None = None
 
 
 @pytest.fixture
@@ -196,22 +206,28 @@ def test_compile_counter_and_roofline(stub_coords, monkeypatch):
     )
     monkeypatch.setenv(
         "PROBING_TORCH_ROOFLINE_PEAKS_JSON",
-        '{"fp16_tensor_dense":{"peak_flops":1000,"peak_bytes_per_sec":100}}',
+        '{"fp16_tensor_dense":{"peak_flops":1000,"peak_bytes_per_sec":10000}}',
     )
     raw_events = [
-        _FakeEvent("aten::linear", id=10),
+        _FakeEvent(
+            "aten::linear",
+            args={"External id": 10},
+            time_range=_FakeTimeRange(100, 150),
+        ),
         _FakeEvent(
             "gemm",
-            id=10,
-            self_cuda_time_total=1_000,
             args={
                 "cat": "cuda_profiler_range",
+                "External id": 10,
+                "ts": 200,
+                "dur": 1_000,
                 "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 3,
                 "smsp__sass_thread_inst_executed_op_fmul_pred_on.sum": 4,
                 "dram__bytes_read.sum": 10,
                 "dram__bytes_write.sum": 15,
                 "sm__warps_active.avg.pct_of_peak_sustained_active": 0.5,
             },
+            time_range=_FakeTimeRange(200, 1_200),
         ),
     ]
     profiler = MagicMock()
@@ -237,9 +253,12 @@ def test_compile_counter_and_roofline(stub_coords, monkeypatch):
     counter = counters[0]
     assert counter.op_name == "aten::linear"
     assert counter.calls == 1
+    assert counter.duration_us == 1_000
     assert counter.flops == 3 * 2 + 4
     assert counter.dram_bytes == 25
-    assert counter.metrics == '{"sm__warps_active.avg.pct_of_peak_sustained_active":0.5}'
+    assert (
+        counter.metrics == '{"sm__warps_active.avg.pct_of_peak_sustained_active":0.5}'
+    )
     roofline = rooflines[0]
     assert roofline.arithmetic_intensity == 10 / 25
     assert roofline.achieved_flops == 10_000
@@ -247,11 +266,221 @@ def test_compile_counter_and_roofline(stub_coords, monkeypatch):
     assert roofline.bottleneck == "compute"
 
 
-def test_roofline_defaults_and_env_selection(monkeypatch):
-    from probing.profiling.torch_profiler.adaptor import roofline_analysis_enabled
+def _counter_trace_events():
+    return [
+        {
+            "name": "aten::linear",
+            "cat": "cpu_op",
+            "ts": 100,
+            "dur": 50,
+            "args": {"External id": 10},
+        },
+        {
+            "name": "gemm",
+            "cat": "cuda_profiler_range",
+            "ts": 200,
+            "dur": 1_000,
+            "args": {
+                "External id": 10,
+                "smsp__sass_thread_inst_executed_op_ffma_pred_on.sum": 3,
+                "smsp__sass_thread_inst_executed_op_fmul_pred_on.sum": 4,
+                "dram__bytes_read.sum": 10,
+                "dram__bytes_write.sum": 15,
+            },
+        },
+    ]
 
-    monkeypatch.delenv("PROBING_TORCH_PROFILER_ANALYSIS", raising=False)
-    assert roofline_analysis_enabled(None) is False
-    monkeypatch.setenv("PROBING_TORCH_PROFILER_ANALYSIS", "roofline")
-    assert roofline_analysis_enabled(None) is True
-    assert roofline_analysis_enabled("none") is False
+
+def test_counter_fallback_association_does_not_inflate_quality(
+    stub_coords, monkeypatch
+):
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_METRICS", raising=False)
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_PEAKS_JSON",
+        '{"fp16_tensor_dense":{"peak_flops":1000,"peak_bytes_per_sec":100}}',
+    )
+    raw_events = [
+        _FakeEvent("aten::mm", time_range=_FakeTimeRange(100, 120)),
+        _FakeEvent(
+            "fallback_kernel",
+            time_range=_FakeTimeRange(150, 160),
+            args={
+                "cat": "cuda_profiler_range",
+                "ts": 150,
+            },
+        ),
+    ]
+    profiler = MagicMock()
+    profiler.events.return_value = raw_events
+    profiler.key_averages.return_value = []
+    capture, _, counters, rooflines, quality = compile_from_profiler(
+        profiler,
+        trigger="unit",
+        steps_profiled=1,
+        started_at_us=0,
+        ended_at_us=50,
+        analysis="roofline",
+    )
+    assert quality == "partial"
+    assert capture.roofline_associated_kernels == 0
+    assert capture.roofline_unassociated_kernels == 1
+    assert counters[0].op_name == "aten::mm"
+    assert rooflines[0].data_quality == "partial"
+
+
+def test_counter_external_id_matches_trace_parity(stub_coords, monkeypatch):
+    trace_events = _counter_trace_events()
+    offline = _offline_counter_row(trace_events)
+    online_events = [
+        _FakeEvent(
+            event["name"],
+            time_range=_FakeTimeRange(event["ts"], event["ts"] + event["dur"]),
+            args={"cat": event["cat"], **event["args"]},
+        )
+        for event in trace_events
+    ]
+    profiler = MagicMock()
+    profiler.events.return_value = online_events
+    profiler.key_averages.return_value = []
+    _, _, counters, rooflines, _ = compile_from_profiler(
+        profiler,
+        trigger="unit",
+        steps_profiled=1,
+        started_at_us=0,
+        ended_at_us=50,
+        analysis="roofline",
+    )
+    assert (
+        counters[0].kernel_name,
+        counters[0].op_name,
+        counters[0].op_stack,
+        counters[0].calls,
+        counters[0].duration_us,
+        counters[0].flops,
+        counters[0].dram_bytes,
+        counters[0].metrics,
+    ) == (
+        offline[0].kernel_name,
+        offline[0].op_name,
+        offline[0].op_stack,
+        offline[0].calls,
+        offline[0].duration_us,
+        offline[0].flops,
+        offline[0].dram_bytes,
+        offline[0].metrics,
+    )
+    assert (
+        rooflines[0].op_name,
+        rooflines[0].kernel_name,
+        rooflines[0].calls,
+        rooflines[0].self_duration_us,
+        rooflines[0].flops,
+        rooflines[0].dram_bytes,
+        rooflines[0].arithmetic_intensity,
+        rooflines[0].achieved_flops,
+        rooflines[0].achieved_bytes_per_sec,
+        rooflines[0].boundedness,
+        rooflines[0].bottleneck,
+    ) == (
+        offline[1].op_name,
+        offline[1].kernel_name,
+        offline[1].calls,
+        offline[1].self_duration_us,
+        offline[1].flops,
+        offline[1].dram_bytes,
+        offline[1].arithmetic_intensity,
+        offline[1].achieved_flops,
+        offline[1].achieved_bytes_per_sec,
+        offline[1].boundedness,
+        offline[1].bottleneck,
+    )
+
+
+def test_truncated_roofline_keeps_facts_but_not_efficiency(stub_coords, monkeypatch):
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_MAX_EVENTS", "1000")
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.adaptor._roofline_max_events",
+        lambda: 2,
+    )
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_PEAKS_JSON",
+        '{"fp16_tensor_dense":{"peak_flops":1000,"peak_bytes_per_sec":100}}',
+    )
+    raw_events = [
+        _FakeEvent(
+            "aten::mm",
+            args={"External id": 10},
+            time_range=_FakeTimeRange(100, 150),
+        ),
+        _FakeEvent(
+            "gemm",
+            args={
+                "cat": "cuda_profiler_range",
+                "External id": 10,
+                "ts": 200,
+                "dur": 10,
+            },
+            time_range=_FakeTimeRange(200, 210),
+        ),
+        _FakeEvent("aten::add", time_range=_FakeTimeRange(300, 320)),
+    ]
+    profiler = MagicMock()
+    profiler.events.return_value = raw_events
+    profiler.key_averages.return_value = []
+    capture, _, counters, rooflines, quality = compile_from_profiler(
+        profiler,
+        trigger="unit",
+        steps_profiled=1,
+        started_at_us=0,
+        ended_at_us=50,
+        analysis="roofline",
+    )
+    assert quality == "truncated"
+    assert capture.roofline_quality == "truncated"
+    assert len(counters) == 1
+    assert rooflines == []
+
+
+def _offline_counter_row(events: list[dict]) -> tuple:
+    from probing.profiling.torch_profiler.session_store import (
+        CounterRecord,
+        RooflineRecord,
+    )
+
+    cpu = next(event for event in events if event["cat"] == "cpu_op")
+    counter = next(event for event in events if event["cat"] == "cuda_profiler_range")
+    flops = counter["args"]["smsp__sass_thread_inst_executed_op_ffma_pred_on.sum"] * 2
+    flops += counter["args"]["smsp__sass_thread_inst_executed_op_fmul_pred_on.sum"]
+    dram_bytes = (
+        counter["args"]["dram__bytes_read.sum"]
+        + counter["args"]["dram__bytes_write.sum"]
+    )
+    return CounterRecord(
+        capture_id="",
+        kernel_name=counter["name"],
+        op_name=cpu["name"],
+        top_level_op=cpu["name"],
+        bottom_level_op=cpu["name"],
+        op_stack=f'["{cpu["name"]}"]',
+        calls=1,
+        duration_us=counter["dur"],
+        flops=flops,
+        dram_bytes=dram_bytes,
+    ), RooflineRecord(
+        capture_id="",
+        local_step=-1,
+        global_step=-1,
+        rank=-1,
+        role="",
+        op_name=cpu["name"],
+        kernel_name=counter["name"],
+        calls=1,
+        self_duration_us=counter["dur"],
+        flops=flops,
+        dram_bytes=dram_bytes,
+        arithmetic_intensity=flops / dram_bytes,
+        achieved_flops=flops * 1_000_000 / counter["dur"],
+        achieved_bytes_per_sec=dram_bytes * 1_000_000 / counter["dur"],
+        bottleneck="unknown",
+        data_quality="partial",
+    )

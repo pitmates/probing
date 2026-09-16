@@ -56,8 +56,6 @@ impl CudaBackend {
             memory_model: GpuMemoryModel::Dedicated,
             chip: None,
             registry_id: None,
-            roofline_peak_flops: None,
-            roofline_peak_bytes_per_sec: None,
         }
     }
 }

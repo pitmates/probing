@@ -7,6 +7,7 @@ import os
 import time
 import uuid
 import json
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -179,13 +180,32 @@ def _counter_kernel_name(event: Any) -> str:
 
 
 def _event_external_id(event: Any) -> int | None:
-    value = getattr(event, "id", None)
+    value = _event_args(event).get("External id")
+    if value is None:
+        value = getattr(event, "external_id", None)
     if value is None:
         return None
     try:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _event_timestamp_us(event: Any) -> int | None:
+    candidates = (
+        getattr(getattr(event, "time_range", None), "start", None),
+        getattr(event, "start_us", None),
+        getattr(event, "start_time", None),
+        _event_args(event).get("ts"),
+    )
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _cpu_op_name(event: Any) -> str | None:
@@ -199,18 +219,37 @@ def _event_self_us(event: Any) -> int:
     return cuda if cuda > 0 else cpu
 
 
+def _event_device_self_us(event: Any) -> int:
+    cuda = int(getattr(event, "self_cuda_time_total", 0) or 0)
+    if cuda > 0:
+        return cuda
+    time_range = getattr(event, "time_range", None)
+    elapsed = getattr(time_range, "elapsed_us", None)
+    if callable(elapsed):
+        try:
+            value = int(elapsed())
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
+    for value in (getattr(event, "duration_us", None), _event_args(event).get("dur")):
+        if value is None:
+            continue
+        try:
+            duration = int(value)
+        except (TypeError, ValueError):
+            continue
+        if duration > 0:
+            return duration
+    return 0
+
+
 def _event_name(event: Any) -> str:
     for attr in ("key", "name"):
         value = getattr(event, attr, None)
         if value:
             return str(value)
     return "unknown"
-
-
-def _event_self_us(event: Any) -> int:
-    cuda = int(getattr(event, "self_cuda_time_total", 0) or 0)
-    cpu = int(getattr(event, "self_cpu_time_total", 0) or 0)
-    return cuda if cuda > 0 else cpu
 
 
 def _event_wall_us(event: Any) -> int:
@@ -314,7 +353,9 @@ def compile_from_profiler(
     status: str = "completed",
     error: str = "",
     analysis: str | None = None,
-) -> tuple[CaptureRecord, list[HotspotRecord], list[CounterRecord], list[RooflineRecord], str]:
+) -> tuple[
+    CaptureRecord, list[HotspotRecord], list[CounterRecord], list[RooflineRecord], str
+]:
     """Compile a finished torch.profiler profile into SQL rows."""
     end_us = ended_at_us if ended_at_us is not None else _now_us()
     events: list[Any] = []
@@ -398,7 +439,8 @@ def _compile_counter_rows(
     scoped_events = raw_events[:max_events]
 
     cpu_by_external_id: dict[int, list[str]] = {}
-    cpu_stacks: list[tuple[int, list[str]]] = []
+    cpu_stacks: list[tuple[int, int, list[str]]] = []
+    launch_stack_by_timestamp: list[tuple[int, tuple[str, ...]]] = []
     counter_events: list[Any] = []
     metrics = _roofline_metrics()
     metric_names = set(metrics)
@@ -415,11 +457,16 @@ def _compile_counter_rows(
         if op_name is None:
             continue
         external_id = _event_external_id(event)
-        op_stack = [*cpu_stacks[-1][1]] if cpu_stacks else []
+        timestamp = _event_timestamp_us(event)
+        op_stack = [*cpu_stacks[-1][2]] if cpu_stacks else []
         op_stack.append(op_name)
         if external_id is not None:
             cpu_by_external_id.setdefault(external_id, []).append(op_name)
-        cpu_stacks.append((external_id if external_id is not None else -1, op_stack))
+        if timestamp is not None:
+            launch_stack_by_timestamp.append((timestamp, tuple(op_stack)))
+        cpu_stacks.append(
+            (external_id if external_id is not None else -1, timestamp or 0, op_stack)
+        )
 
     aggs: dict[tuple[str, tuple[str, ...]], _CounterAgg] = {}
     unassociated = 0
@@ -427,19 +474,34 @@ def _compile_counter_rows(
     for event in counter_events:
         kernel_name = _counter_kernel_name(event)
         external_id = _event_external_id(event)
-        op_names = cpu_by_external_id.get(external_id) if external_id is not None else None
+        op_names = (
+            cpu_by_external_id.get(external_id) if external_id is not None else None
+        )
+        associated_by_external_id = bool(op_names)
         if not op_names:
-            op_names = [cpu_stacks[-1][1][-1]] if cpu_stacks else []
+            timestamp = _event_timestamp_us(event)
+            if timestamp is not None and launch_stack_by_timestamp:
+                position = bisect_right(
+                    [
+                        event_timestamp
+                        for event_timestamp, _ in launch_stack_by_timestamp
+                    ],
+                    timestamp,
+                )
+                op_names = (
+                    [*launch_stack_by_timestamp[position - 1][1]] if position else []
+                )
+        if not associated_by_external_id:
+            unassociated += 1
         if not op_names:
             op_names = [""]
-            unassociated += 1
         else:
-            associated += 1
+            associated += int(associated_by_external_id)
         op_stack = tuple(op_names)
         key = (kernel_name, op_stack)
         agg = aggs.setdefault(key, _CounterAgg())
         agg.calls += 1
-        agg.duration_us += _event_self_us(event)
+        agg.duration_us += _event_device_self_us(event)
         for name, weight in _SASS_METRICS:
             if name not in metric_names:
                 continue
@@ -497,6 +559,8 @@ def _compile_counter_rows(
                 metrics=json.dumps(agg.metrics, separators=(",", ":")),
             )
         )
+        if truncated:
+            continue
         arithmetic_intensity = (
             agg.flops / agg.dram_bytes if agg.dram_bytes > 0 else None
         )
@@ -511,7 +575,7 @@ def _compile_counter_rows(
             boundedness = min(compute_eff, memory_eff)
             if abs(compute_eff - memory_eff) < (1.0 - threshold):
                 bottleneck = "balanced"
-            elif compute_eff < memory_eff:
+            elif compute_eff > memory_eff:
                 bottleneck = "compute"
             else:
                 bottleneck = "memory"

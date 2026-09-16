@@ -134,6 +134,10 @@ def test_status_reflects_controller(monkeypatch):
         "probing.profiling.torch_profiler.controller.HAS_TORCH",
         True,
     )
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.torch",
+        fake_torch,
+    )
     fake_torch.profiler.profile.return_value = mock_profile
     monkeypatch.setattr(
         "probing.profiling.torch_profiler.controller.torch",
@@ -166,3 +170,22 @@ def test_double_start_raises(monkeypatch):
     ctrl.start(steps=1, trigger="a")
     with pytest.raises(RuntimeError, match="already running"):
         ctrl.start(steps=1, trigger="b")
+
+
+def test_start_failure_does_not_leave_controller_running(monkeypatch):
+    fake_torch = _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.HAS_TORCH",
+        True,
+    )
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.torch",
+        fake_torch,
+    )
+    fake_torch.profiler.profile.side_effect = RuntimeError("construction failed")
+
+    ctrl = ProfilerController()
+    with pytest.raises(RuntimeError, match="construction failed"):
+        ctrl.start(steps=1, trigger="test")
+    assert ctrl.is_running is False
+    assert ctrl._profiler is None

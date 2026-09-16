@@ -192,7 +192,7 @@ def reset_session_store_for_tests() -> None:
 def roofline_peaks() -> tuple[float | None, float | None]:
     raw = os.environ.get("PROBING_TORCH_ROOFLINE_PEAKS_JSON", "").strip()
     if not raw:
-        return _gpu_device_peaks()
+        return None, None
     try:
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
@@ -220,22 +220,4 @@ def roofline_peaks() -> tuple[float | None, float | None]:
         logging.getLogger(__name__).warning(
             "invalid PROBING_TORCH_ROOFLINE_PEAKS_JSON: %s", exc
         )
-        return None, None
-
-
-def _gpu_device_peaks() -> tuple[float | None, float | None]:
-    try:
-        import probing
-
-        frame = probing.query(
-            "SELECT roofline_peak_flops, roofline_peak_bytes_per_sec "
-            "FROM gpu.devices ORDER BY device_id LIMIT 1"
-        )
-        if frame is None or len(frame) == 0:
-            return None, None
-        row = frame.iloc[0]
-        peak_flops = float(row["roofline_peak_flops"])
-        peak_bytes = float(row["roofline_peak_bytes_per_sec"])
-        return peak_flops, peak_bytes
-    except Exception:
         return None, None
