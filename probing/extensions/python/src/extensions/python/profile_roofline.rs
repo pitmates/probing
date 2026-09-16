@@ -6,7 +6,7 @@ use probing_core::core::{
     ArrayRef, DataType, Field, Float64Array, Int64Array, RecordBatch, Schema, SchemaRef,
     StringArray,
 };
-use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList};
+use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods};
 use pyo3::Python;
 
 use super::tbls::{try_record_batch, PythonTableError, TableResult};
