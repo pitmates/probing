@@ -115,40 +115,53 @@ class ProfilerController:
                         "roofline counters require a PyTorch version with "
                         "torch.profiler._ExperimentalConfig"
                     )
-                profile_kwargs["experimental_config"] = experimental_config(
-                    _params=[("profile_device", "1")]
-                    + [("metrics", metric) for metric in _roofline_metrics()]
-                )
-            self._profiler = torch.profiler.profile(**profile_kwargs)
+                try:
+                    profile_kwargs["experimental_config"] = experimental_config(
+                        profiler_metrics=list(_roofline_metrics()),
+                        profiler_measure_per_kernel=True,
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "roofline counters require a compatible PyTorch/CUPTI runtime"
+                    ) from exc
+                _probe_roofline_capabilities(profile_kwargs["experimental_config"])
+            try:
+                self._profiler = torch.profiler.profile(**profile_kwargs)
 
-            from torch.optim.optimizer import register_optimizer_step_post_hook
+                from torch.optim.optimizer import register_optimizer_step_post_hook
 
-            controller = self
+                controller = self
 
-            def profiler_step_hook(optimizer, *args, **kwargs):
-                del optimizer, args, kwargs
-                with controller._lock:
-                    if controller._profiler is None or not controller._running:
-                        return
-                    if controller._step_count == 0:
-                        controller._profiler.__enter__()
-                        logger.info(
-                            "torch profiler started (trigger=%s, steps=%d)",
-                            controller._trigger,
-                            controller._steps_target,
-                        )
-                    if controller._step_count >= controller._steps_target:
-                        return
-                    try:
-                        controller._profiler.step()
-                        controller._step_count += 1
+                def profiler_step_hook(optimizer, *args, **kwargs):
+                    del optimizer, args, kwargs
+                    with controller._lock:
+                        if controller._profiler is None or not controller._running:
+                            return
+                        if controller._step_count == 0:
+                            controller._profiler.__enter__()
+                            logger.info(
+                                "torch profiler started (trigger=%s, steps=%d)",
+                                controller._trigger,
+                                controller._steps_target,
+                            )
                         if controller._step_count >= controller._steps_target:
-                            controller._finalize_capture(status="completed")
-                    except RuntimeError as exc:
-                        controller._finalize_capture(status="failed", error=str(exc))
+                            return
+                        try:
+                            controller._profiler.step()
+                            controller._step_count += 1
+                            if controller._step_count >= controller._steps_target:
+                                controller._finalize_capture(status="completed")
+                        except RuntimeError as exc:
+                            controller._finalize_capture(
+                                status="failed", error=str(exc)
+                            )
 
-            self._hook_handle = register_optimizer_step_post_hook(profiler_step_hook)
-            self._running = True
+                self._hook_handle = register_optimizer_step_post_hook(profiler_step_hook)
+                self._running = True
+            except Exception:
+                self._profiler = None
+                self._hook_handle = None
+                raise
 
     def stop(self) -> Optional[str]:
         """Stop early; returns capture_id when a capture was materialized."""
@@ -272,7 +285,54 @@ class ProfilerController:
                 )
             except Exception as exc:
                 logger.warning("failed to compile profile capture: %s", exc)
+            try:
+                if roofline_analysis_enabled(self._analysis):
+                    self._cached_timeline = _export_chrome_trace(profiler)
+                    self._timeline_exported = self._cached_timeline is not None
+            except Exception as exc:
+                logger.debug("roofline parity trace export failed: %s", exc)
         return capture.capture_id if capture is not None else None
+
+
+def _export_chrome_trace(profiler: Any) -> Optional[str]:
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".json", text=True)
+    os.close(tmp_fd)
+    try:
+        profiler.export_chrome_trace(tmp_path)
+        with open(tmp_path, encoding="utf-8") as handle:
+            trace_json = handle.read()
+        parsed = json.loads(trace_json)
+        return trace_json if parsed.get("traceEvents") else None
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def _probe_roofline_capabilities(experimental_config: Any) -> None:
+    if not torch.cuda.is_available():
+        raise RuntimeError("roofline counters require an available CUDA device")
+    activities = [
+        torch.profiler.ProfilerActivity.CPU,
+        torch.profiler.ProfilerActivity.CUDA,
+    ]
+    probe = torch.profiler.profile(
+        activities=activities,
+        experimental_config=experimental_config,
+    )
+    try:
+        probe.__enter__()
+    except Exception as exc:
+        raise RuntimeError(
+            "roofline capability check failed: PyTorch/Kineto rejected "
+            "CUPTI Range Profiler or the requested metrics"
+        ) from exc
+    finally:
+        try:
+            probe.__exit__(None, None, None)
+        except Exception as exc:
+            logger.debug("roofline capability probe cleanup failed: %s", exc)
 
 
 _CONTROLLER: Optional[ProfilerController] = None

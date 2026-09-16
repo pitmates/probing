@@ -86,6 +86,28 @@ class _RooflineCompileResult:
     associated_kernels: int
     unassociated_kernels: int
     missing_metrics: list[str]
+    error: str = ""
+
+
+class _TraceEvent:
+    def __init__(
+        self,
+        *,
+        name: str,
+        args: dict[str, Any],
+        duration_us: Any,
+        timestamp_us: Any,
+    ) -> None:
+        self.name = name
+        self.args = args
+        try:
+            self.duration_us = int(duration_us) if duration_us is not None else None
+        except (TypeError, ValueError):
+            self.duration_us = None
+        try:
+            self.timestamp_us = int(timestamp_us) if timestamp_us is not None else None
+        except (TypeError, ValueError):
+            self.timestamp_us = None
 
 
 def _bucket_kind_for_name(name: str) -> str:
@@ -134,8 +156,8 @@ def _roofline_metrics() -> tuple[str, ...]:
 
 
 def selected_profiler_analysis(analysis: str | None) -> str:
-    if analysis is not None:
-        return analysis.strip().lower() or "none"
+    if analysis is not None and analysis.strip():
+        return analysis.strip().lower()
     return os.environ.get("PROBING_TORCH_PROFILER_ANALYSIS", "none").strip().lower()
 
 
@@ -196,6 +218,7 @@ def _event_timestamp_us(event: Any) -> int | None:
         getattr(getattr(event, "time_range", None), "start", None),
         getattr(event, "start_us", None),
         getattr(event, "start_time", None),
+        getattr(event, "timestamp_us", None),
         _event_args(event).get("ts"),
     )
     for value in candidates:
@@ -208,9 +231,33 @@ def _event_timestamp_us(event: Any) -> int | None:
     return None
 
 
+def _load_trace_event(trace_event: dict[str, Any]) -> Any:
+    args = trace_event.get("args")
+    event_args = dict(args) if isinstance(args, dict) else {}
+    if "cat" in trace_event:
+        event_args.setdefault("cat", trace_event["cat"])
+    return _TraceEvent(
+        name=str(trace_event.get("name", "unknown")),
+        args=event_args,
+        duration_us=trace_event.get("dur"),
+        timestamp_us=trace_event.get("ts"),
+    )
+
+
 def _cpu_op_name(event: Any) -> str | None:
     name = _event_name(event)
     return name if name.startswith(("aten::", "autograd::")) else None
+
+
+def _event_op_stack(event: Any, op_name: str) -> tuple[str, ...]:
+    stack = getattr(event, "stack", None)
+    names: list[str] = []
+    if stack is not None:
+        for frame in stack:
+            frame_name = frame if isinstance(frame, str) else _event_name(frame)
+            if frame_name:
+                names.append(frame_name)
+    return tuple(names) if names else (op_name,)
 
 
 def _event_self_us(event: Any) -> int:
@@ -415,6 +462,12 @@ def compile_from_profiler(
         capture.roofline_unassociated_kernels = result.unassociated_kernels
         capture.roofline_missing_metrics = json.dumps(result.missing_metrics)
         capture.roofline_parser_version = ROOFLINE_PARSER_VERSION
+        if result.error:
+            capture.error = (
+                f"{capture.error}; roofline: {result.error}"
+                if capture.error
+                else f"roofline: {result.error}"
+            )
         counters = result.counters
         rooflines = result.rooflines
         roofline_quality = result.quality
@@ -438,8 +491,7 @@ def _compile_counter_rows(
     truncated = len(raw_events) > max_events
     scoped_events = raw_events[:max_events]
 
-    cpu_by_external_id: dict[int, list[str]] = {}
-    cpu_stacks: list[tuple[int, int, list[str]]] = []
+    cpu_by_external_id: dict[int, list[tuple[str, ...]]] = {}
     launch_stack_by_timestamp: list[tuple[int, tuple[str, ...]]] = []
     counter_events: list[Any] = []
     metrics = _roofline_metrics()
@@ -458,25 +510,23 @@ def _compile_counter_rows(
             continue
         external_id = _event_external_id(event)
         timestamp = _event_timestamp_us(event)
-        op_stack = [*cpu_stacks[-1][2]] if cpu_stacks else []
-        op_stack.append(op_name)
+        op_stack = _event_op_stack(event, op_name)
         if external_id is not None:
-            cpu_by_external_id.setdefault(external_id, []).append(op_name)
+            cpu_by_external_id.setdefault(external_id, []).append(tuple(op_stack))
         if timestamp is not None:
             launch_stack_by_timestamp.append((timestamp, tuple(op_stack)))
-        cpu_stacks.append(
-            (external_id if external_id is not None else -1, timestamp or 0, op_stack)
-        )
 
     aggs: dict[tuple[str, tuple[str, ...]], _CounterAgg] = {}
     unassociated = 0
     associated = 0
+    peak_flops, peak_bytes = roofline_peaks()
     for event in counter_events:
         kernel_name = _counter_kernel_name(event)
         external_id = _event_external_id(event)
-        op_names = (
+        op_stacks = (
             cpu_by_external_id.get(external_id) if external_id is not None else None
         )
+        op_names = list(op_stacks[-1]) if op_stacks else None
         associated_by_external_id = bool(op_names)
         if not op_names:
             timestamp = _event_timestamp_us(event)
@@ -527,16 +577,34 @@ def _compile_counter_rows(
 
     if not counter_events:
         quality = "unavailable"
+        roofline_error = (
+            "no cuda_profiler_range events; CUPTI Range Profiler is unavailable "
+            "or the window contained no CUDA kernels"
+        )
     elif truncated:
         quality = "truncated"
-    elif missing_metrics or unassociated:
+        roofline_error = "event limit reached; roofline efficiency was not computed"
+    elif (
+        missing_metrics
+        or unassociated
+        or peak_flops is None
+        or peak_bytes is None
+    ):
         quality = "partial"
+        diagnostics = []
+        if missing_metrics:
+            diagnostics.append(f"missing metrics: {', '.join(sorted(missing_metrics))}")
+        if unassociated:
+            diagnostics.append(f"unassociated kernels: {unassociated}")
+        if peak_flops is None or peak_bytes is None:
+            diagnostics.append("platform peaks are missing or invalid")
+        roofline_error = "; ".join(diagnostics)
     else:
         quality = "ok"
+        roofline_error = ""
 
     counters: list[CounterRecord] = []
     rooflines: list[RooflineRecord] = []
-    peak_flops, peak_bytes = roofline_peaks()
     threshold = _balanced_threshold()
     for (kernel_name, op_stack), agg in sorted(aggs.items()):
         op_name = op_stack[-1]
@@ -610,6 +678,41 @@ def _compile_counter_rows(
         associated_kernels=associated,
         unassociated_kernels=unassociated,
         missing_metrics=sorted(missing_metrics),
+        error=roofline_error,
+    )
+
+
+def compile_roofline_from_trace(
+    trace_payload: str | dict[str, Any],
+    *,
+    capture_id: str,
+    local_step: int,
+    global_step: int,
+    rank: int,
+    role: str,
+) -> _RooflineCompileResult:
+    payload = (
+        json.loads(trace_payload) if isinstance(trace_payload, str) else trace_payload
+    )
+    trace_events = payload.get("traceEvents") if isinstance(payload, dict) else None
+    if not isinstance(trace_events, list):
+        raise ValueError("Chrome trace must contain a traceEvents array")
+    raw_events = [
+        _load_trace_event(event) for event in trace_events if isinstance(event, dict)
+    ]
+    raw_events.sort(
+        key=lambda event: (
+            _event_timestamp_us(event) is None,
+            _event_timestamp_us(event) or 0,
+        )
+    )
+    return _compile_counter_rows(
+        raw_events,
+        capture_id=capture_id,
+        local_step=local_step,
+        global_step=global_step,
+        rank=rank,
+        role=role,
     )
 
 

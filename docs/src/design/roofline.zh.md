@@ -168,6 +168,11 @@ Profiler。实现必须把以下条件作为能力探测，而不是假设版本
 支持的 PyTorch / CUDA / driver 组合由实现 PR 的环境矩阵给出；能力探测
 失败时返回可诊断错误，不 fallback 到 `with_flops=True` 估算值。
 
+实现分两层执行探测：启动前先用一个不执行 CUDA kernel 的短 profiler
+context 验证 CUDA、Range Profiler 与 metric 配置能否被当前运行时接受；
+capture 结束后若仍没有 `cuda_profiler_range` 事件，则记录 `unavailable`
+与可诊断错误，而不是把估算 FLOPs 冒充 counter roofline。
+
 ### 5.2 采集开销
 
 Roofline 不是在现有 hook 中“额外保存几个字段”就能得到的。现有
@@ -255,7 +260,8 @@ Roofline 采用“在线采集、窗口内编译”的两段式执行：
 finalize 阶段执行：
 
 1. 过滤 `cat == "cuda_profiler_range"` 的 CUPTI 计数事件；
-2. 通过 `ExternalID` 与 `cpu_op` 事件关联，构建 `op_stack`；
+2. 通过 `ExternalID` 与 `cpu_op` 事件关联；`op_stack` 来自该 CPU event
+   自身的 stack 信息，不能按时间顺序累计前序算子；
 3. 计算每个 kernel 的 FLOPs 与 DRAM bytes；
 4. 聚合生成 `profile_counter` 行；
 5. 获取平台峰值，计算 roofline 效率；

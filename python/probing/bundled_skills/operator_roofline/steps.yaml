@@ -28,12 +28,15 @@ spec:
       type: sql
       sql: |
         SELECT
-          r.capture_id,
-          count(*) AS rows,
-          count_if(r.data_quality = 'ok') AS ok_rows
-        FROM python.profile_roofline AS r
-        JOIN python.profile_capture AS c ON c.capture_id = r.capture_id
-        GROUP BY r.capture_id, c.ended_at_us
+          c.capture_id,
+          c.status,
+          c.roofline_quality,
+          count(r.capture_id) AS rows,
+          count(*) FILTER (WHERE r.data_quality = 'ok') AS ok_rows
+        FROM python.profile_capture AS c
+        LEFT JOIN python.profile_roofline AS r ON r.capture_id = c.capture_id
+        WHERE c.analysis LIKE '%roofline%'
+        GROUP BY c.capture_id, c.status, c.roofline_quality, c.ended_at_us
         ORDER BY c.ended_at_us DESC
       on_empty: fail
       empty_message: "无 profile_roofline 数据 — 使用 analysis=roofline 启动短窗口 profiler capture"
@@ -46,6 +49,7 @@ spec:
           SELECT capture_id
           FROM python.profile_capture
           WHERE status = 'completed'
+            AND analysis LIKE '%roofline%'
           ORDER BY ended_at_us DESC
           LIMIT 1
         )
@@ -68,15 +72,23 @@ spec:
       title: "计算受限算子"
       type: sql
       sql: |
+        WITH latest_capture AS (
+          SELECT capture_id
+          FROM python.profile_capture
+          WHERE status = 'completed'
+            AND analysis LIKE '%roofline%'
+          ORDER BY ended_at_us DESC
+          LIMIT 1
+        )
         SELECT
           op_name,
-          bottleneck,
           count(*) AS rows,
           sum(flops) AS total_flops,
           sum(dram_bytes) AS total_dram_bytes
         FROM python.profile_roofline
-        WHERE data_quality = 'ok'
-        WHERE bottleneck = 'compute'
+        WHERE capture_id IN (SELECT capture_id FROM latest_capture)
+          AND data_quality = 'ok'
+          AND bottleneck = 'compute'
         GROUP BY op_name
         ORDER BY total_flops DESC
         LIMIT {operator_limit}
@@ -87,13 +99,23 @@ spec:
       title: "访存受限算子"
       type: sql
       sql: |
+        WITH latest_capture AS (
+          SELECT capture_id
+          FROM python.profile_capture
+          WHERE status = 'completed'
+            AND analysis LIKE '%roofline%'
+          ORDER BY ended_at_us DESC
+          LIMIT 1
+        )
         SELECT
           op_name,
           count(*) AS rows,
           sum(flops) AS total_flops,
           sum(dram_bytes) AS total_dram_bytes
         FROM python.profile_roofline
-        WHERE data_quality = 'ok' AND bottleneck = 'memory'
+        WHERE capture_id IN (SELECT capture_id FROM latest_capture)
+          AND data_quality = 'ok'
+          AND bottleneck = 'memory'
         GROUP BY op_name
         ORDER BY total_dram_bytes DESC
         LIMIT {operator_limit}
@@ -104,13 +126,23 @@ spec:
       title: "平衡算子"
       type: sql
       sql: |
+        WITH latest_capture AS (
+          SELECT capture_id
+          FROM python.profile_capture
+          WHERE status = 'completed'
+            AND analysis LIKE '%roofline%'
+          ORDER BY ended_at_us DESC
+          LIMIT 1
+        )
         SELECT
           op_name,
           count(*) AS rows,
           sum(flops) AS total_flops,
           sum(dram_bytes) AS total_dram_bytes
         FROM python.profile_roofline
-        WHERE data_quality = 'ok' AND bottleneck = 'balanced'
+        WHERE capture_id IN (SELECT capture_id FROM latest_capture)
+          AND data_quality = 'ok'
+          AND bottleneck = 'balanced'
         GROUP BY op_name
         ORDER BY total_flops DESC
         LIMIT {operator_limit}

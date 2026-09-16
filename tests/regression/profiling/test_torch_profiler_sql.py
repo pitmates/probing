@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import probing
+import pytest
 from probing.profiling.torch_profiler.session_store import (
     CaptureRecord,
     CounterRecord,
@@ -10,6 +11,11 @@ from probing.profiling.torch_profiler.session_store import (
     RooflineRecord,
 )
 from probing.profiling.torch_profiler.session_store import get_session_store
+
+
+@pytest.mark.slow
+def test_roofline_chrome_trace_parity_requires_real_cupti_environment():
+    """Design parity requires a real PyTorch/CUDA/CUPTI Range fixture."""
 
 
 def _seed_capture() -> str:

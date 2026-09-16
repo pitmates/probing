@@ -64,6 +64,10 @@ capture rather than to `PROBING_TORCH_PROFILING`, so enabling continuous TorchPr
 never implicitly enables high-overhead CUPTI counters; future capture analyses can share the
 same `analysis` parameter instead of growing one process-global flag per tool. The full design
 is in [Operator Roofline](roofline.md).
+For parity, a roofline capture also exports the same Kineto session to Chrome trace format once
+after online compilation. Offline parsing and `profiler.events()` compilation must produce the
+same counter facts, operator association, and roofline values; this trace is retained with the
+bounded capture only for diagnostics and does not add a hot-path write.
 
 ### TorchProbe as a long-running step state machine
 

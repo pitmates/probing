@@ -202,10 +202,13 @@ def roofline_peaks() -> tuple[float | None, float | None]:
             raise ValueError("peaks JSON missing fp16_tensor_dense")
         peak_flops = entry.get("peak_flops")
         peak_bytes = entry.get("peak_bytes_per_sec")
-        if not isinstance(peak_flops, (int, float)) or not isinstance(
-            peak_bytes, (int, float)
+        if (
+            not isinstance(peak_flops, (int, float))
+            or not isinstance(peak_bytes, (int, float))
+            or peak_flops <= 0
+            or peak_bytes <= 0
         ):
-            raise ValueError("peaks must be numeric")
+            raise ValueError("peaks must be positive numbers")
         unknown = set(parsed) - {"fp16_tensor_dense"}
         if unknown:
             import logging

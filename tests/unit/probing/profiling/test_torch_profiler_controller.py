@@ -130,6 +130,7 @@ def test_stop_when_idle_returns_latest_capture(monkeypatch):
 def test_status_reflects_controller(monkeypatch):
     mock_profile = MagicMock()
     fake_torch = _install_fake_torch(monkeypatch)
+    fake_torch.cuda.is_available.return_value = True
     monkeypatch.setattr(
         "probing.profiling.torch_profiler.controller.HAS_TORCH",
         True,
@@ -187,5 +188,56 @@ def test_start_failure_does_not_leave_controller_running(monkeypatch):
     ctrl = ProfilerController()
     with pytest.raises(RuntimeError, match="construction failed"):
         ctrl.start(steps=1, trigger="test")
+    assert ctrl.is_running is False
+    assert ctrl._profiler is None
+
+
+def test_roofline_experimental_config_uses_pytorch_named_arguments(monkeypatch):
+    fake_torch = _install_fake_torch(monkeypatch)
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.HAS_TORCH",
+        True,
+    )
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.torch",
+        fake_torch,
+    )
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_METRICS",
+        "dram__bytes_read.sum,dram__bytes_write.sum",
+    )
+    config = fake_torch.profiler._ExperimentalConfig
+    config.side_effect = TypeError("unsupported arguments")
+    fake_torch.profiler.profile.return_value = MagicMock()
+
+    ctrl = ProfilerController()
+    with pytest.raises(RuntimeError, match="compatible PyTorch/CUPTI runtime"):
+        ctrl.start(steps=1, trigger="test", analysis="roofline")
+    config.assert_called_once_with(
+        profiler_metrics=["dram__bytes_read.sum", "dram__bytes_write.sum"],
+        profiler_measure_per_kernel=True,
+    )
+    assert ctrl.is_running is False
+    assert ctrl._profiler is None
+
+
+def test_roofline_capability_probe_failure_is_diagnostic(monkeypatch):
+    fake_torch = _install_fake_torch(monkeypatch)
+    fake_torch.cuda.is_available.return_value = True
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.HAS_TORCH",
+        True,
+    )
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.torch",
+        fake_torch,
+    )
+    probe = MagicMock()
+    probe.__enter__.side_effect = RuntimeError("CUPTI range unsupported")
+    fake_torch.profiler.profile.return_value = probe
+
+    ctrl = ProfilerController()
+    with pytest.raises(RuntimeError, match="roofline capability check failed"):
+        ctrl.start(steps=1, trigger="test", analysis="roofline")
     assert ctrl.is_running is False
     assert ctrl._profiler is None
