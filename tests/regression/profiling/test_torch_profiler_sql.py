@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import probing
 import pytest
 from probing.profiling.torch_profiler.session_store import (
@@ -14,8 +16,13 @@ from probing.profiling.torch_profiler.session_store import get_session_store
 
 
 @pytest.mark.slow
+@pytest.mark.skipif(
+    os.getenv("PROBING_TORCH_ROOFLINE_E2E") != "1",
+    reason="requires a real PyTorch/CUDA/CUPTI Range Profiler environment",
+)
 def test_roofline_chrome_trace_parity_requires_real_cupti_environment():
-    """Design parity requires a real PyTorch/CUDA/CUPTI Range fixture."""
+    """Run design parity against the real CUPTI environment when enabled."""
+    pytest.fail("PROBING_TORCH_ROOFLINE_E2E implementation run must be added")
 
 
 def _seed_capture() -> str:

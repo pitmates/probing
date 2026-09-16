@@ -257,7 +257,10 @@ def _event_op_stack(event: Any, op_name: str) -> tuple[str, ...]:
             frame_name = frame if isinstance(frame, str) else _event_name(frame)
             if frame_name:
                 names.append(frame_name)
-    return tuple(names) if names else (op_name,)
+    stack = tuple(names) if names else ()
+    if op_name not in stack:
+        stack = (*stack, op_name)
+    return stack
 
 
 def _event_self_us(event: Any) -> int:

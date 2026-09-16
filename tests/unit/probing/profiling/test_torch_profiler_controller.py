@@ -241,3 +241,23 @@ def test_roofline_capability_probe_failure_is_diagnostic(monkeypatch):
         ctrl.start(steps=1, trigger="test", analysis="roofline")
     assert ctrl.is_running is False
     assert ctrl._profiler is None
+
+
+def test_roofline_capability_probe_construction_failure_is_diagnostic(monkeypatch):
+    fake_torch = _install_fake_torch(monkeypatch)
+    fake_torch.cuda.is_available.return_value = True
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.HAS_TORCH",
+        True,
+    )
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.torch",
+        fake_torch,
+    )
+    fake_torch.profiler.profile.side_effect = TypeError("unsupported metric")
+
+    ctrl = ProfilerController()
+    with pytest.raises(RuntimeError, match="roofline capability check failed"):
+        ctrl.start(steps=1, trigger="test", analysis="roofline")
+    assert ctrl.is_running is False
+    assert ctrl._profiler is None

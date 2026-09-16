@@ -317,10 +317,16 @@ def _probe_roofline_capabilities(experimental_config: Any) -> None:
         torch.profiler.ProfilerActivity.CPU,
         torch.profiler.ProfilerActivity.CUDA,
     ]
-    probe = torch.profiler.profile(
-        activities=activities,
-        experimental_config=experimental_config,
-    )
+    try:
+        probe = torch.profiler.profile(
+            activities=activities,
+            experimental_config=experimental_config,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "roofline capability check failed: PyTorch/Kineto rejected "
+            "CUPTI Range Profiler or the requested metrics"
+        ) from exc
     try:
         probe.__enter__()
     except Exception as exc:

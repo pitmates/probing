@@ -519,6 +519,38 @@ def test_cpu_event_stack_is_preserved(stub_coords, monkeypatch):
     assert counters[0].bottom_level_op == "aten::add"
 
 
+def test_cpu_event_stack_appends_op_when_missing(stub_coords, monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_PEAKS_JSON",
+        '{"fp16_tensor_dense":{"peak_flops":1000,"peak_bytes_per_sec":10000}}',
+    )
+    raw_events = [
+        _FakeEvent(
+            "aten::add",
+            args={"External id": 11},
+            stack=("Module.forward", "Module.inner"),
+            time_range=_FakeTimeRange(100, 150),
+        ),
+        _FakeEvent(
+            "add_kernel",
+            args={"cat": "cuda_profiler_range", "External id": 11},
+            time_range=_FakeTimeRange(200, 210),
+        ),
+    ]
+    profiler = MagicMock()
+    profiler.events.return_value = raw_events
+    profiler.key_averages.return_value = []
+    _, _, counters, _, _ = compile_from_profiler(
+        profiler,
+        trigger="unit",
+        steps_profiled=1,
+        started_at_us=0,
+        ended_at_us=250,
+        analysis="roofline",
+    )
+    assert json.loads(counters[0].op_stack) == ["Module.forward", "Module.inner", "aten::add"]
+
+
 def test_offline_trace_launch_fallback_uses_timestamp_order(monkeypatch):
     trace_events = [
         {
