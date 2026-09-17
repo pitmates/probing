@@ -82,52 +82,54 @@ device_arch     = ...
 
 ## 5. ROCm/DCU 适配路径
 
-优先做 spike，根据结果二选一：
+Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、1500 MHz）无法通过 PyTorch/Kineto 进程内路径取得 roofline counter。Kineto 只提供 kernel 时间线，不暴露 `cuda_profiler_range` / `hip_profiler_range`，也没有 metric args。因此 v1 采用 `rocprofiler` sidecar；进程内路径只保留诊断记录，不用于 counter 采集。
 
-### 5.1 进程内 Kineto 路径
+### 5.1 进程内 Kineto 路径（已验证，不可用）
 
-- 验证 PyTorch ROCm 版本是否能产生 AMD counter 事件。
-- 若能，扩展 adaptor，识别 `hip_profiler_range` 或等价 category。
-- 优点：生命周期与现有 `torch.profiler` 一致，改动小。
-- 缺点：依赖 PyTorch/Kineto/ROCm 组合是否真正暴露 metric。
+- PyTorch 2.9.0 / ROCm 6.3.26093 会接受 `_ExperimentalConfig` 指标，但 `profiler.events()` 中无 counter 事件，metric keys 为空。
+- Chrome trace 可见 `kernel`、`cuda_runtime`、`gpu_memset`，但没有 `cuda_profiler_range` 或 `hip_profiler_range`。
+- 结论：v1 不再投资该路径；能力探测固定写入 `counter_backend=rocm`，sidecar 未就绪时返回 `unavailable`。
 
-### 5.2 离线 `rocprofiler` sidecar 路径
+### 5.2 离线 `rocprofiler` sidecar 路径（v1 主路径）
 
-- 由 L2 collector 在捕获窗口内运行 `rocprofiler`，输出 CSV/JSON。
-- 捕获结束后按 `capture_id`、时间戳或 `correlation_id` 与 Kineto timeline join。
+- 工具链：`/opt/dtk-26.04/rocprofiler/bin/rocprof`、`rocprofv2`；metric 定义在 `lib/rocprofiler/metrics.xml` 与 `gfx_metrics.xml`。
+- L2 collector 在捕获窗口内启动 `rocprofiler`，按 rank 独立采集，输出 CSV/JSON 后按 `capture_id`、时间戳或 `correlation_id` 与 Kineto timeline join。
 - 优点：metric 完整，兼容性更可控。
 - 缺点：多进程生命周期、fan-out 和文件清理更复杂。
+- 当前风险：`rocprofv2 --plugin file` 尚未产出端到端 counter 文件；旧 `rocprof` 已进入 metric 分组，但首次验证因 `Context Create failed` 中止。实现时 sidecar 必须标为 experimental，并保留 `unavailable` 降级。
 
 ## 6. Metric 映射草案
 
-ROCm 指标名必须在目标 DCU 型号上验证。初始草案：
+以下名称已在 `gfx936` 的 `rocprofv2 --list-counters` 中确认存在，但数值转换仍须 fixture / E2E 验证。
 
-- FLOPs：`SQ_INSTS_VALU`、`SQ_INSTS_VALU_MFMA_MAC_F32` 等，按指令类型加权。
-- DRAM：`TCC_EA_RDREQ` / `TCC_EA_WRREQ`，乘以 burst size 得到字节数。
-- Kernel 时长：`DurationNs` / `KernelDuration`。
-- 算子关联：优先 `correlation_id`，缺失时按时间戳回退最近 CPU op launch。
-
-禁止把 NVIDIA SASS 指标名直接搬给 ROCm，也禁止用估算 FLOPs 标记为 `ok`。
+- 指令计数：`SQ_INSTS_VALU`、`SQ_INSTS_SALU`、`SQ_INSTS_VMEM_RD`、`SQ_INSTS_VMEM_WR`、`SQ_INSTS_VMEM`、`SQ_INSTS_MMOP`。
+- DRAM 字节：
+  - `TCC_EA_RDREQ_32B`、`TCC_EA_RDREQ`
+  - `TCC_EA_WRREQ_64B`、`TCC_EA_WRREQ`
+  - 公式草案：`read_bytes = 32 * RDREQ_32B + 64 * (RDREQ - RDREQ_32B)`，write 同理。
+- Kernel 时长：优先取 `DurationNs` / `KernelDuration`；缺失时不得用 CPU 时间冒充 device 时长。
+- 算子关联：优先 `correlation_id`，缺失时按时间戳回退到最近 launch，不采用“最后一个 CPU op”或虚假关联计数。
+- 禁止把 NVIDIA SASS 指标名直接映射到 ROCm，也禁止用估算 FLOPs 标记为 `ok`。
 
 ## 7. 峰值配置
 
-现有 `PROBING_TORCH_ROOFLINE_PEAKS_JSON` 只支持 `fp16_tensor_dense`。
-扩展为厂商/架构/精度可解析的结构：
+现有 `PROBING_TORCH_ROOFLINE_PEAKS_JSON` 只支持 `fp16_tensor_dense`。扩展为 vendor / arch / precision 可解析结构；`gfx936` 先使用占位值，待 DCU 规格确认后填入。
 
 ```json
 {
   "backend": "rocm",
-  "device_arch": "gfx942",
+  "device_arch": "gfx936",
   "peaks": {
     "fp16_tensor_dense": {
-      "peak_flops": 312000000000000,
-      "peak_bytes_per_sec": 1600000000000
+      "peak_flops": 0,
+      "peak_bytes_per_sec": 0
     }
   }
 }
 ```
 
-向后兼容：不提供 `backend` 时按当前 CUDA v1 语义解析。
+- `0` 表示未校准，禁止参与 roofline 效率结论，只能用于能力 / 数据完整性展示。
+- 不提供 `backend` 时按当前 CUDA v1 语义解析。
 
 ## 8. SQL 与配置
 
@@ -138,6 +140,7 @@ ROCm 指标名必须在目标 DCU 型号上验证。初始草案：
   - `PROBING_TORCH_ROOFLINE_ROCM_METRICS`
   - `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON`
   - `PROBING_TORCH_ROOFLINE_ROCPROF_PATH`
+  - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（experimental sidecar 开关）
 - 同步更新 `env-vars`、`sql-tables`、`semantic_catalog` 和 `operator_roofline` skill。
 
 ## 9. 多 rank
@@ -149,22 +152,23 @@ ROCm 指标名必须在目标 DCU 型号上验证。初始草案：
 
 ## 10. 实施阶段
 
-1. Phase 0：DCU/ROCm spike，验证 Kineto 或 `rocprofiler` 的真实事件、指标和关联能力。
-2. Phase 1：抽出 `RooflineBackend`，现有 CUDA 路径回归保持不变。
-3. Phase 2：实现 `rocm` backend 的采集与解析。
-4. Phase 3：能力探测、峰值配置、capture 元数据落库。
-5. Phase 4：单元测试、fixture parity、ROCm E2E 标记 `slow`。
+1. Phase 0（已完成）：DCU/ROCm spike，确认 Kineto 不可用，选定 `rocprofiler` sidecar。
+2. Phase 1：抽取 `RooflineBackend`，CUDA 路径回归保持不变。
+3. Phase 2：实现 `rocm` capability probe 与 metric catalog，capture 元数据落库；sidecar 采集标为 experimental。
+4. Phase 3：补齐 `rocprofiler` 调用、fan-out、输出解析与文件清理，验证真实 counter。
+5. Phase 4：单测、fixture parity、ROCm E2E 标 `slow`。
 
 ## 11. 测试
 
-- 单元：vendor 探测、metric 映射、单位换算、峰值解析。
-- Fixture：用离线 rocprofiler 输出验证 counter、关联和 roofline 数值。
+- 单元：vendor 探测、metric 映射、单位换算、峰值解析、backend 选择。
+- Fixture：用离线 rocprofiler CSV/JSON 验证 counter 解析、算子关联和 roofline 数值。
 - 回归：确保 CUDA 路径不因后端抽象发生行为变化。
-- E2E：在真实 ROCm/DCU 环境验证完整链路。
+- E2E：在真实 `gfx936`/DCU 环境验证完整链路，标 `slow`；Phase 0 未打通的 sidecar 端到端输出作为前置待办。
 
 ## 12. 风险
 
-- DCU 不同型号/ROCm 版本 metric 名差异大。
-- ROCm 是否由 Kineto 直接暴露 counter 尚未验证。
-- `rocprofiler` 多 rank 并发采集需要控制互斥与文件生命周期。
-- 算子关联精度依赖 `correlation_id` 在真实训练栈中的可用性。
+- `gfx936` 不同 ROCm/DTK 版本 metric 名称可能变化。
+- `rocprofv2 --plugin file` 当前未产出端到端结果，需先验证正确参数组合。
+- 多 pass 采集受硬件计数器限制，counter 分组和 session 管理复杂。
+- 多 rank 并发 sidecar 需要互斥与文件生命周期控制。
+- 算子关联精度依赖 `correlation_id` 是否在真实训练栈可用。
