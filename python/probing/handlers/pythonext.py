@@ -404,10 +404,10 @@ def start_pytorch_profile(
 ) -> str:
     """Start PyTorch global profiler (legacy path)."""
     try:
-        from probing.repl.torch_magic import TorchMagic
+        from probing.profiling.torch_profiler import get_controller
 
-        torch_magic = TorchMagic(None)
-        torch_magic._start_global_profiler(steps, trigger=trigger, analysis=analysis)
+        controller = get_controller()
+        controller.start(steps=steps, trigger=trigger, analysis=analysis)
         return json.dumps(
             {
                 "success": True,
