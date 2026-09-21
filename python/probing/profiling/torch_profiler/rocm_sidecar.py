@@ -1,11 +1,10 @@
 """Offline ROCm counter-artifact parser for the roofline backend.
 
 This module is the in-process contract half: it validates and normalizes
-counter artifacts into python.profile_counter fact rows. Artifact producers
-(the experimental rocprofiler sidecar and its temp-file lifecycle) are not
-implemented here or anywhere in the current phase, so inputs today come from
-unit fixtures and direct caller payloads only. This module does not launch
-rocprofiler, manage subprocesses, clean up files, or perform cluster fan-out.
+counter artifacts into python.profile_counter fact rows. Artifact production
+(the experimental rocprofiler sidecar and its temp-file lifecycle) lives in
+``rocm_runner.py``; this module does not launch rocprofiler, manage
+subprocesses, clean up files, or perform cluster fan-out.
 
 Supported inputs:
 
