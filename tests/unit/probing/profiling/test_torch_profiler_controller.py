@@ -32,6 +32,8 @@ def _mock_profiler(events: list[_FakeEvent]) -> MagicMock:
 
 def _install_fake_torch(monkeypatch) -> MagicMock:
     fake_torch = MagicMock()
+    fake_torch.version.cuda = "12.1"
+    fake_torch.version.hip = None
     fake_torch.cuda.is_available.return_value = False
     optimizer_module = types.ModuleType("torch.optim.optimizer")
     optimizer_module.register_optimizer_step_post_hook = MagicMock(return_value=1)
@@ -194,6 +196,7 @@ def test_start_failure_does_not_leave_controller_running(monkeypatch):
 
 def test_roofline_experimental_config_uses_pytorch_named_arguments(monkeypatch):
     fake_torch = _install_fake_torch(monkeypatch)
+    fake_torch.cuda.is_available.return_value = True
     monkeypatch.setattr(
         "probing.profiling.torch_profiler.controller.HAS_TORCH",
         True,

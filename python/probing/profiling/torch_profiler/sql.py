@@ -86,7 +86,7 @@ _COLUMN_DOCS: dict[str, dict[str, str]] = {
         "op_stack": "Operator stack as a JSON array (diagnostic only)",
         "calls": "Kernel invocation count",
         "duration_us": "Kernel duration (microseconds)",
-        "flops": "FLOPs from SASS instruction counters",
+        "flops": "FLOPs from SASS instruction counters (NULL when uncalibrated, e.g. ROCm)",
         "dram_bytes": "DRAM bytes read + written",
         "metrics": "Extra requested metrics as a JSON object",
     },

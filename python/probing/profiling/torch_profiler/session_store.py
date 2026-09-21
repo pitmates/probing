@@ -76,9 +76,9 @@ class CounterRecord:
     bottom_level_op: str = ""
     op_stack: str = "[]"
     calls: int = 0
-    duration_us: int = 0
-    flops: int = 0
-    dram_bytes: int = 0
+    duration_us: int | None = 0
+    flops: int | None = 0
+    dram_bytes: int | None = 0
     metrics: str = "{}"
 
 

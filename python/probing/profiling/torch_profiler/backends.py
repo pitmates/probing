@@ -13,6 +13,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from .rocm_metrics import ROCM_DEFAULT_METRICS
+
 
 @dataclass(frozen=True)
 class BackendInfo:
@@ -305,16 +307,7 @@ class RocmRooflineBackend(RooflineBackend):
         metrics = tuple(item.strip() for item in raw.split(",") if item.strip())
         if metrics:
             return metrics
-        return (
-            "SQ_INSTS_VALU",
-            "SQ_INSTS_SALU",
-            "SQ_INSTS_VMEM_WR",
-            "SQ_INSTS_VMEM_RD",
-            "TCC_EA_RDREQ_32B",
-            "TCC_EA_WRREQ_64B",
-            "TCC_EA_RDREQ",
-            "TCC_EA_WRREQ",
-        )
+        return ROCM_DEFAULT_METRICS
 
     def probe(self, torch_module: Any) -> CapabilityResult:
         enabled = _env_flag("PROBING_TORCH_ROOFLINE_ROCM_PROFILE")
@@ -361,18 +354,64 @@ class RocmRooflineBackend(RooflineBackend):
         rank: int,
         role: str,
     ) -> Any:
-        del raw_events, capture_id, local_step, global_step, rank, role
         from .adaptor import _RooflineCompileResult
+        from .rocm_sidecar import build_counter_records, parse_counter_artifact
 
+        if not raw_events:
+            return _RooflineCompileResult(
+                counters=[],
+                rooflines=[],
+                quality="unavailable",
+                counter_events=0,
+                associated_kernels=0,
+                unassociated_kernels=0,
+                missing_metrics=[],
+                error=self._capability_error
+                or "no rocm counter artifacts were produced",
+            )
+        try:
+            rows = parse_counter_artifact(raw_events)
+        except (ValueError, TypeError) as exc:
+            return _RooflineCompileResult(
+                counters=[],
+                rooflines=[],
+                quality="unavailable",
+                counter_events=0,
+                associated_kernels=0,
+                unassociated_kernels=0,
+                missing_metrics=[],
+                error=f"rocm sidecar artifact parse failed: {exc}",
+            )
+        if not rows:
+            return _RooflineCompileResult(
+                counters=[],
+                rooflines=[],
+                quality="unavailable",
+                counter_events=0,
+                associated_kernels=0,
+                unassociated_kernels=0,
+                missing_metrics=[],
+                error="rocm sidecar artifact contained no counter rows",
+            )
+        counters, missing_metrics = build_counter_records(
+            rows,
+            capture_id=capture_id,
+            local_step=local_step,
+            global_step=global_step,
+            rank=rank,
+            role=role,
+        )
+        associated = sum(1 for row in rows if row.get("op_name"))
+        unassociated = len(rows) - associated
         return _RooflineCompileResult(
-            counters=[],
+            counters=counters,
             rooflines=[],
-            quality="unavailable",
-            counter_events=0,
-            associated_kernels=0,
-            unassociated_kernels=0,
-            missing_metrics=[],
-            error=self._capability_error or "rocm roofline sidecar is not implemented yet",
+            quality="partial",
+            counter_events=len(counters),
+            associated_kernels=associated,
+            unassociated_kernels=unassociated,
+            missing_metrics=missing_metrics,
+            error="",
         )
 
 
