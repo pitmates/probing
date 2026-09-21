@@ -63,6 +63,7 @@ class ProfilerController:
         self._timeline_exported = False
         self._running = False
         self._backend: Optional[RooflineBackend] = None
+        self._rocm_sidecar: Any = None
 
     @property
     def is_running(self) -> bool:
@@ -117,6 +118,8 @@ class ProfilerController:
                 self._backend = backend
                 if capability.status == "ok":
                     profile_kwargs = backend.build_profiler_kwargs(profile_kwargs, torch)
+                    if backend.info.counter_source == "rocm":
+                        self._start_rocm_sidecar(backend)
             try:
                 self._profiler = torch.profiler.profile(**profile_kwargs)
 
@@ -153,6 +156,7 @@ class ProfilerController:
             except Exception:
                 self._profiler = None
                 self._hook_handle = None
+                self._discard_rocm_sidecar()
                 raise
 
     def stop(self) -> Optional[str]:
@@ -226,6 +230,29 @@ class ProfilerController:
             logger.debug("failed to remove optimizer hook: %s", exc)
         self._hook_handle = None
 
+    def _start_rocm_sidecar(self, backend: RooflineBackend) -> None:
+        from .rocm_runner import RocmSidecarSession
+
+        session = RocmSidecarSession()
+        start_error = session.start()
+        if start_error:
+            backend.note_collection_error(start_error)
+            logger.warning("rocm roofline sidecar start failed: %s", start_error)
+            self._rocm_sidecar = None
+            return
+        self._rocm_sidecar = session
+        logger.info("rocm roofline sidecar started")
+
+    def _discard_rocm_sidecar(self) -> None:
+        sidecar = self._rocm_sidecar
+        self._rocm_sidecar = None
+        if sidecar is None:
+            return
+        try:
+            sidecar.cleanup()
+        except Exception as exc:
+            logger.debug("rocm roofline sidecar cleanup failed: %s", exc)
+
     def _finalize_capture(
         self, *, status: str = "completed", error: str = ""
     ) -> Optional[str]:
@@ -239,6 +266,22 @@ class ProfilerController:
         steps_done = self._step_count
         self._running = False
         self._profiler = None
+
+        sidecar = self._rocm_sidecar
+        self._rocm_sidecar = None
+        rocm_rows: Any = None
+        if sidecar is not None:
+            try:
+                rocm_rows, sidecar_error = sidecar.collect()
+            except Exception as exc:
+                sidecar_error = f"rocm sidecar collection failed: {exc}"
+            if sidecar_error:
+                if self._backend is not None:
+                    self._backend.note_collection_error(sidecar_error)
+                logger.warning(
+                    "rocm roofline sidecar collect failed: %s", sidecar_error
+                )
+                rocm_rows = None
 
         capture: Optional[CaptureRecord] = None
         if profiler is not None:
@@ -265,6 +308,12 @@ class ProfilerController:
                     error=error,
                     analysis=self._analysis,
                     backend=self._backend,
+                    raw_counter_events=(
+                        (rocm_rows if rocm_rows is not None else [])
+                        if self._backend is not None
+                        and self._backend.info.counter_source == "rocm"
+                        else None
+                    ),
                 )
                 get_session_store().add_capture(capture, hotspots, counters, rooflines)
                 logger.info(

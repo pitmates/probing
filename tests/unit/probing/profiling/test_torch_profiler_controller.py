@@ -45,6 +45,49 @@ def _install_fake_torch(monkeypatch) -> MagicMock:
     return fake_torch
 
 
+def test_start_rocm_sidecar_records_start_error(monkeypatch):
+    from probing.profiling.torch_profiler import rocm_runner
+
+    fake_session = MagicMock()
+    fake_session.start.return_value = "exploded"
+    monkeypatch.setattr(
+        rocm_runner, "RocmSidecarSession", lambda: fake_session
+    )
+    backend = MagicMock()
+    ctrl = ProfilerController()
+    ctrl._start_rocm_sidecar(backend)
+
+    backend.note_collection_error.assert_called_once_with("exploded")
+    assert ctrl._rocm_sidecar is None
+
+
+def test_start_rocm_sidecar_stores_session_on_success(monkeypatch):
+    from probing.profiling.torch_profiler import rocm_runner
+
+    fake_session = MagicMock()
+    fake_session.start.return_value = ""
+    monkeypatch.setattr(
+        rocm_runner, "RocmSidecarSession", lambda: fake_session
+    )
+    backend = MagicMock()
+    ctrl = ProfilerController()
+    ctrl._start_rocm_sidecar(backend)
+
+    backend.note_collection_error.assert_not_called()
+    assert ctrl._rocm_sidecar is fake_session
+
+
+def test_discard_rocm_sidecar_cleans_up():
+    fake_session = MagicMock()
+    ctrl = ProfilerController()
+    ctrl._rocm_sidecar = fake_session
+
+    ctrl._discard_rocm_sidecar()
+
+    fake_session.cleanup.assert_called_once()
+    assert ctrl._rocm_sidecar is None
+
+
 def test_finalize_materializes_sql_rows(monkeypatch):
     monkeypatch.setattr(
         "probing.profiling.torch_profiler.adaptor.row_fields",

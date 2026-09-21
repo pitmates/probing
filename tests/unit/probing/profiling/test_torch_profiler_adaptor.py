@@ -429,6 +429,40 @@ def test_counter_external_id_matches_trace_parity(stub_coords, monkeypatch):
     assert offline.associated_kernels == 1
 
 
+def test_compile_from_profiler_passes_raw_counter_override(stub_coords):
+    from probing.profiling.torch_profiler.adaptor import _RooflineCompileResult
+
+    profiler = MagicMock()
+    profiler.key_averages.return_value = [
+        _FakeEvent("aten::add", self_cpu_time_total=25),
+    ]
+    backend = MagicMock()
+    backend.info.counter_source = "rocm"
+    backend.compile_counter_rows.return_value = _RooflineCompileResult(
+        counters=[],
+        rooflines=[],
+        quality="partial",
+        counter_events=0,
+        associated_kernels=0,
+        unassociated_kernels=0,
+        missing_metrics=[],
+    )
+    payload = [{"kernel_name": "gemm", "metrics": {}}]
+
+    compile_from_profiler(
+        profiler,
+        trigger="unit",
+        steps_profiled=1,
+        started_at_us=0,
+        ended_at_us=50,
+        analysis="roofline",
+        backend=backend,
+        raw_counter_events=payload,
+    )
+
+    assert backend.compile_counter_rows.call_args.args[0] == payload
+
+
 def test_roofline_unavailable_capture_reports_diagnostic_error(
     stub_coords, monkeypatch
 ):

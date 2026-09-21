@@ -145,7 +145,7 @@ Non-PROBING-prefixed aliases are also recognized for Megatron compatibility:
 | `PROBING_TORCH_ROOFLINE_BACKEND` | `auto` | Roofline counter backend: `auto`, `cuda`, or `rocm`. |
 | `PROBING_TORCH_ROOFLINE_ROCM_METRICS` | — | Comma-separated ROCm counter override for experimental ROCm captures. |
 | `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON` | — | ROCm peak configuration: `{"backend":"rocm","device_arch":"gfx936","peaks":{...}}`. |
-| `PROBING_TORCH_ROOFLINE_ROCPROF_PATH` | — | Path to `rocprofv2` or `rocprof` for the ROCm sidecar. |
+| `PROBING_TORCH_ROOFLINE_ROCPROF_CMD` | — | Shell template for the experimental ROCm sidecar; `{output}` is replaced with the per-session artifact directory and `{pid}` with the training process id. |
 | `PROBING_TORCH_ROOFLINE_ROCM_PROFILE` | `0` | Enable the experimental ROCm sidecar collector. |
 | `PROBING_TORCH_ROOFLINE_BALANCED_THRESHOLD` | `0.9` | Roofline balanced-classification threshold. |
 | `PROBING_TORCH_ROOFLINE_PEAKS_JSON` | — | Explicit `fp16_tensor_dense` peak values: `{"fp16_tensor_dense":{"peak_flops":312e12,"peak_bytes_per_sec":1.6e12}}`. |

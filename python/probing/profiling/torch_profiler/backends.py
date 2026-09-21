@@ -1,19 +1,20 @@
 """Vendor backends for roofline counter acquisition.
 
 The CUDA path keeps the existing in-process Kineto/CUPTI flow. The ROCm path
-is detected and probed so captures can report diagnostic metadata, but v1 does
-not yet implement the external ``rocprofiler`` sidecar collector.
+adds detection/probing plus an experimental external ``rocprofiler`` sidecar,
+gated behind ``PROBING_TORCH_ROOFLINE_ROCM_PROFILE`` and
+``PROBING_TORCH_ROOFLINE_ROCPROF_CMD``.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from .rocm_metrics import ROCM_DEFAULT_METRICS
+from .rocm_runner import sidecar_command, sidecar_enabled
 
 
 @dataclass(frozen=True)
@@ -31,10 +32,6 @@ class CapabilityResult:
     status: str
     error: str = ""
     experimental_config: Any = None
-
-
-def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 CUDA_DEFAULT_METRICS: tuple[str, ...] = (
@@ -140,32 +137,19 @@ def selected_backend(torch_module: Any) -> BackendInfo:
     return detected
 
 
-def _rocprofiler_path() -> Optional[str]:
-    configured = os.environ.get("PROBING_TORCH_ROOFLINE_ROCPROF_PATH", "").strip()
-    if configured:
-        return configured if os.path.isfile(configured) else None
-    candidates = (
-        "/opt/dtk-26.04/rocprofiler/bin/rocprofv2",
-        "/opt/dtk-26.04/rocprofiler/bin/rocprof",
-    )
-    for candidate in candidates:
-        if os.path.isfile(candidate):
-            return candidate
-    return shutil.which("rocprofv2") or shutil.which("rocprof")
-
-
 class RooflineBackend(ABC):
     """Vendor-specific roofline backend.
 
     CUDA owns the Kineto/CUPTI experimental config, capability probe, and
-    counter compilation. ROCm owns detection and the future rocprofiler
-    sidecar path; until that path is implemented it returns an explicit
-    unavailable result.
+    counter compilation. ROCm owns detection and the experimental external
+    rocprofiler sidecar path (enabled by
+    PROBING_TORCH_ROOFLINE_ROCM_PROFILE + PROBING_TORCH_ROOFLINE_ROCPROF_CMD).
     """
 
     def __init__(self, info: BackendInfo) -> None:
         self.info = info
         self._capability_error = ""
+        self._runtime_error = ""
 
     @abstractmethod
     def metrics(self) -> tuple[str, ...]:
@@ -181,6 +165,11 @@ class RooflineBackend(ABC):
 
     def probe_capabilities(self, torch_module: Any) -> CapabilityResult:
         return self.probe(torch_module)
+
+    def note_collection_error(self, message: str) -> None:
+        """Record a runtime sidecar failure surfaced when the capture compiles."""
+        if message and not self._runtime_error:
+            self._runtime_error = message
 
     @staticmethod
     def detect(torch_module: Any) -> BackendInfo:
@@ -310,9 +299,8 @@ class RocmRooflineBackend(RooflineBackend):
         return ROCM_DEFAULT_METRICS
 
     def probe(self, torch_module: Any) -> CapabilityResult:
-        enabled = _env_flag("PROBING_TORCH_ROOFLINE_ROCM_PROFILE")
-        tool_path = _rocprofiler_path()
-        if not enabled:
+        del torch_module
+        if not sidecar_enabled():
             self._capability_error = (
                 "rocm roofline sidecar is disabled; set "
                 "PROBING_TORCH_ROOFLINE_ROCM_PROFILE=1 to enable the experimental path"
@@ -322,23 +310,21 @@ class RocmRooflineBackend(RooflineBackend):
                 status="unavailable",
                 error=self._capability_error,
             )
-        if not tool_path:
+        if not sidecar_command():
             self._capability_error = (
-                "rocprofiler/rocprofv2 was not found; set "
-                "PROBING_TORCH_ROOFLINE_ROCPROF_PATH"
+                "rocm roofline sidecar is enabled but "
+                "PROBING_TORCH_ROOFLINE_ROCPROF_CMD is not set; provide a shell "
+                "template with an {output} placeholder"
             )
             return CapabilityResult(
                 backend=self.info,
                 status="unavailable",
                 error=self._capability_error,
             )
-        self._capability_error = (
-            "rocm roofline sidecar is detected but collection is not implemented yet"
-        )
+        self._capability_error = ""
         return CapabilityResult(
             backend=self.info,
-            status="unavailable",
-            error=self._capability_error,
+            status="ok",
         )
 
     def build_profiler_kwargs(self, base_kwargs: dict[str, Any], torch_module: Any) -> dict[str, Any]:
@@ -366,7 +352,8 @@ class RocmRooflineBackend(RooflineBackend):
                 associated_kernels=0,
                 unassociated_kernels=0,
                 missing_metrics=[],
-                error=self._capability_error
+                error=self._runtime_error
+                or self._capability_error
                 or "no rocm counter artifacts were produced",
             )
         try:

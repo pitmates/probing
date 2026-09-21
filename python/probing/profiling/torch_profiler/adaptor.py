@@ -401,6 +401,7 @@ def compile_from_profiler(
     error: str = "",
     analysis: str | None = None,
     backend: Any = None,
+    raw_counter_events: Any = None,
 ) -> tuple[
     CaptureRecord, list[HotspotRecord], list[CounterRecord], list[RooflineRecord], str
 ]:
@@ -466,8 +467,11 @@ def compile_from_profiler(
         capture.device_model = backend_info.device_model
         capture.device_arch = backend_info.device_arch
     if roofline_analysis_enabled(selected_analysis):
+        counter_input = (
+            raw_events if raw_counter_events is None else raw_counter_events
+        )
         result = backend.compile_counter_rows(
-            raw_events,
+            counter_input,
             capture_id=capture.capture_id,
             local_step=capture.local_step,
             global_step=capture.global_step,

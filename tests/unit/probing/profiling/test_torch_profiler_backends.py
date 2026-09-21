@@ -56,29 +56,26 @@ def test_rocm_probe_disabled_is_unavailable(monkeypatch):
     assert "disabled" in result.error
 
 
-def test_rocm_probe_enabled_without_tool_is_unavailable(monkeypatch):
+def test_rocm_probe_enabled_without_command_is_unavailable(monkeypatch):
     monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "1")
-    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCPROF_PATH", "")
-    monkeypatch.setattr(
-        "probing.profiling.torch_profiler.backends._rocprofiler_path",
-        lambda: None,
-    )
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
     info = BackendInfo("amd", "BW", "gfx936", "rocm")
     result = RocmRooflineBackend(info).probe(_fake_torch(hip="6.3.26093"))
     assert result.status == "unavailable"
-    assert "not found" in result.error
+    assert "ROCPROF_CMD" in result.error
+    assert "{output}" in result.error
 
 
-def test_rocm_probe_enabled_with_tool_but_unimplemented_is_unavailable(monkeypatch):
+def test_rocm_probe_enabled_with_command_is_ok(monkeypatch):
     monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "1")
-    monkeypatch.setattr(
-        "probing.profiling.torch_profiler.backends._rocprofiler_path",
-        lambda: "/opt/rocprof",
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCPROF_CMD",
+        "rocprofv2 --target-process {pid} --output {output}",
     )
     info = BackendInfo("amd", "BW", "gfx936", "rocm")
     result = RocmRooflineBackend(info).probe(_fake_torch(hip="6.3.26093"))
-    assert result.status == "unavailable"
-    assert "not implemented" in result.error
+    assert result.status == "ok"
+    assert result.error == ""
 
 
 def test_rocm_platform_peaks_reads_rocm_config(monkeypatch):

@@ -139,7 +139,7 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
   - `PROBING_TORCH_ROOFLINE_BACKEND=auto|cuda|rocm`
   - `PROBING_TORCH_ROOFLINE_ROCM_METRICS`
   - `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON`
-  - `PROBING_TORCH_ROOFLINE_ROCPROF_PATH`
+  - `PROBING_TORCH_ROOFLINE_ROCPROF_CMD`
   - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（experimental sidecar 开关）
 - 同步更新 `env-vars`、`sql-tables`、`semantic_catalog` 和 `operator_roofline` skill。
 

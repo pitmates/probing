@@ -4,13 +4,14 @@ Runs an operator-configured rocprofiler command for the duration of one
 capture, collects the normalized JSON/CSV artifact, and removes the temporary
 output directory. This owns the launch / collect / cleanup half of the ROCm
 roofline pipeline and is deliberately gated behind
-PROBING_TORCH_ROOFLINE_ROCM_PROFILE=1; it is not wired into the capture
-control flow yet.
+PROBING_TORCH_ROOFLINE_ROCM_PROFILE=1. ``ProfilerController`` starts and
+collects one session per capture window for the rocm backend.
 
 Because the vendor attach/collection command has not been validated on the
 target DCU, this module never selects a rocprofiler command on its own. The
 operator must set PROBING_TORCH_ROOFLINE_ROCPROF_CMD to a shell template whose
-{output} placeholder is replaced with a per-session temp directory. A missing
+{output} placeholder is replaced with a per-session temp directory and whose
+{pid} placeholder is replaced with the current process id. A missing
 or failing command degrades to an explicit error string instead of fabricating
 counter rows.
 """
@@ -68,6 +69,7 @@ class RocmSidecarSession:
         try:
             outdir = tempfile.mkdtemp(prefix="probing-rocm-artifacts-")
             rendered = command.replace("{output}", shlex.quote(outdir))
+            rendered = rendered.replace("{pid}", str(os.getpid()))
             popen_kwargs: dict[str, Any] = {
                 "shell": True,
                 "stdout": subprocess.PIPE,
