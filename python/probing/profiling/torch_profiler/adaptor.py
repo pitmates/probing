@@ -15,6 +15,7 @@ from probing.parallel import current_role
 from probing.tracing.coordinates import row_fields
 from probing.tracing import step
 
+from .backends import CUDA_DEFAULT_METRICS
 from .session_store import (
     CaptureRecord,
     CounterRecord,
@@ -51,11 +52,7 @@ _SASS_METRICS: tuple[tuple[str, int], ...] = (
     ("smsp__sass_thread_inst_executed_op_dadd_pred_on.sum", 1),
 )
 _SASS_METRIC_NAMES = {name for name, _ in _SASS_METRICS}
-DEFAULT_ROOFLINE_METRICS = (
-    *(name for name, _ in _SASS_METRICS),
-    "dram__bytes_read.sum",
-    "dram__bytes_write.sum",
-)
+DEFAULT_ROOFLINE_METRICS = CUDA_DEFAULT_METRICS
 
 
 @dataclass
@@ -403,6 +400,7 @@ def compile_from_profiler(
     status: str = "completed",
     error: str = "",
     analysis: str | None = None,
+    backend: Any = None,
 ) -> tuple[
     CaptureRecord, list[HotspotRecord], list[CounterRecord], list[RooflineRecord], str
 ]:
@@ -450,8 +448,25 @@ def compile_from_profiler(
     )
     selected_analysis = selected_profiler_analysis(analysis)
     capture.analysis = selected_analysis
+    if backend is None and roofline_analysis_enabled(selected_analysis):
+        from .backends import BackendInfo, CudaRooflineBackend
+
+        backend = CudaRooflineBackend(
+            BackendInfo(
+                vendor="nvidia",
+                device_model="",
+                device_arch="unknown",
+                counter_source="cuda",
+            )
+        )
+    if backend is not None:
+        backend_info = backend.info
+        capture.counter_backend = backend_info.counter_source
+        capture.device_vendor = backend_info.vendor
+        capture.device_model = backend_info.device_model
+        capture.device_arch = backend_info.device_arch
     if roofline_analysis_enabled(selected_analysis):
-        result = _compile_counter_rows(
+        result = backend.compile_counter_rows(
             raw_events,
             capture_id=capture.capture_id,
             local_step=capture.local_step,
@@ -464,7 +479,11 @@ def compile_from_profiler(
         capture.roofline_associated_kernels = result.associated_kernels
         capture.roofline_unassociated_kernels = result.unassociated_kernels
         capture.roofline_missing_metrics = json.dumps(result.missing_metrics)
-        capture.roofline_parser_version = ROOFLINE_PARSER_VERSION
+        capture.roofline_parser_version = (
+            ROOFLINE_PARSER_VERSION
+            if backend.info.counter_source == "cuda"
+            else ""
+        )
         if result.error:
             capture.error = (
                 f"{capture.error}; roofline: {result.error}"
@@ -489,6 +508,7 @@ def _compile_counter_rows(
     global_step: int,
     rank: int,
     role: str,
+    peaks: Optional[tuple[float | None, float | None]] = None,
 ) -> _RooflineCompileResult:
     max_events = _roofline_max_events()
     truncated = len(raw_events) > max_events
@@ -522,7 +542,7 @@ def _compile_counter_rows(
     aggs: dict[tuple[str, tuple[str, ...]], _CounterAgg] = {}
     unassociated = 0
     associated = 0
-    peak_flops, peak_bytes = roofline_peaks()
+    peak_flops, peak_bytes = peaks if peaks is not None else roofline_peaks()
     for event in counter_events:
         kernel_name = _counter_kernel_name(event)
         external_id = _event_external_id(event)

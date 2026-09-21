@@ -141,6 +141,10 @@ On-demand `torch.profiler` capture anchor and quality metadata.
 | `roofline_unassociated_kernels` | Counter kernels without an operator association |
 | `roofline_missing_metrics` | Missing required metric names JSON |
 | `roofline_parser_version` | Parser and HTA alignment version |
+| `counter_backend` | Counter backend: `cuda`, `rocm`, or `none` |
+| `device_vendor` | Device vendor: `nvidia`, `amd`, or `unknown` |
+| `device_model` | GPU model reported by torch |
+| `device_arch` | Device architecture: `sm_XX`, `gfxXXX`, or `unknown` |
 
 ---
 

@@ -53,7 +53,7 @@ counter_source: cuda | rocm | none
 
 - `ok`：可以启动 counter capture。
 - `unavailable`：当前平台不支持，给出可诊断错误。
-- `degraded`：部分 metric 可用，capture 结果应标记 `partial`。
+- `degraded`：预留状态，表示部分 metric 可用；v1 实现目前只产出 `ok` / `unavailable`，暂不产出 `degraded`。
 
 现有 CUPTI 代码迁入 `cuda` backend；`rocm` backend 只负责 AMD 指标解析和换算；
 SQL 聚合、roofline 公式、`SessionStore` 写入保持共享。

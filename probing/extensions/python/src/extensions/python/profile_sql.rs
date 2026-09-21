@@ -35,6 +35,10 @@ fn profile_capture_schema() -> SchemaRef {
         Field::new("roofline_unassociated_kernels", DataType::Int64, true),
         Field::new("roofline_missing_metrics", DataType::Utf8, true),
         Field::new("roofline_parser_version", DataType::Utf8, true),
+        Field::new("counter_backend", DataType::Utf8, true),
+        Field::new("device_vendor", DataType::Utf8, true),
+        Field::new("device_model", DataType::Utf8, true),
+        Field::new("device_arch", DataType::Utf8, true),
     ]))
 }
 
@@ -122,6 +126,10 @@ pub fn profile_capture_batches() -> TableResult<Vec<RecordBatch>> {
         let mut roofline_unassociated_kernels = Vec::new();
         let mut roofline_missing_metrics = Vec::new();
         let mut roofline_parser_version = Vec::new();
+        let mut counter_backend = Vec::new();
+        let mut device_vendor = Vec::new();
+        let mut device_model = Vec::new();
+        let mut device_arch = Vec::new();
 
         for item in rows.iter() {
             let dict = item
@@ -149,6 +157,10 @@ pub fn profile_capture_batches() -> TableResult<Vec<RecordBatch>> {
             roofline_unassociated_kernels.push(dict_opt_i64(dict, "roofline_unassociated_kernels"));
             roofline_missing_metrics.push(dict_opt_str(dict, "roofline_missing_metrics"));
             roofline_parser_version.push(dict_opt_str(dict, "roofline_parser_version"));
+            counter_backend.push(dict_opt_str(dict, "counter_backend"));
+            device_vendor.push(dict_opt_str(dict, "device_vendor"));
+            device_model.push(dict_opt_str(dict, "device_model"));
+            device_arch.push(dict_opt_str(dict, "device_arch"));
         }
 
         let columns: Vec<ArrayRef> = vec![
@@ -174,6 +186,10 @@ pub fn profile_capture_batches() -> TableResult<Vec<RecordBatch>> {
             Arc::new(Int64Array::from(roofline_unassociated_kernels)),
             Arc::new(StringArray::from(roofline_missing_metrics)),
             Arc::new(StringArray::from(roofline_parser_version)),
+            Arc::new(StringArray::from(counter_backend)),
+            Arc::new(StringArray::from(device_vendor)),
+            Arc::new(StringArray::from(device_model)),
+            Arc::new(StringArray::from(device_arch)),
         ];
         Ok(vec![try_record_batch(schema, columns)?])
     })
@@ -253,6 +269,10 @@ mod tests {
             "analysis",
             "roofline_quality",
             "roofline_parser_version",
+            "counter_backend",
+            "device_vendor",
+            "device_model",
+            "device_arch",
         ] {
             assert!(schema.field_with_name(col).is_ok(), "missing column {col}");
         }

@@ -16,10 +16,13 @@ import time
 from typing import Any, Optional
 
 from .adaptor import (
-    _roofline_metrics,
     compile_from_profiler,
     roofline_analysis_enabled,
     selected_profiler_analysis,
+)
+from .backends import (
+    RooflineBackend,
+    create_roofline_backend,
 )
 from .session_store import CaptureRecord, get_session_store
 
@@ -59,6 +62,7 @@ class ProfilerController:
         self._cached_timeline: Optional[str] = None
         self._timeline_exported = False
         self._running = False
+        self._backend: Optional[RooflineBackend] = None
 
     @property
     def is_running(self) -> bool:
@@ -94,6 +98,7 @@ class ProfilerController:
             self._started_at_us = _now_us()
             self._cached_timeline = None
             self._timeline_exported = False
+            self._backend = None
 
             activities = [torch.profiler.ProfilerActivity.CPU]
             if torch.cuda.is_available():
@@ -102,29 +107,16 @@ class ProfilerController:
             profile_kwargs: dict[str, Any] = {
                 "record_shapes": True,
                 "with_stack": True,
-                "with_flops": True,
+                "with_flops": not roofline_analysis_enabled(analysis),
                 "activities": activities,
                 "on_trace_ready": None,
             }
             if roofline_analysis_enabled(analysis):
-                experimental_config = getattr(
-                    torch.profiler, "_ExperimentalConfig", None
-                )
-                if experimental_config is None:
-                    raise RuntimeError(
-                        "roofline counters require a PyTorch version with "
-                        "torch.profiler._ExperimentalConfig"
-                    )
-                try:
-                    profile_kwargs["experimental_config"] = experimental_config(
-                        profiler_metrics=list(_roofline_metrics()),
-                        profiler_measure_per_kernel=True,
-                    )
-                except (TypeError, ValueError) as exc:
-                    raise RuntimeError(
-                        "roofline counters require a compatible PyTorch/CUPTI runtime"
-                    ) from exc
-                _probe_roofline_capabilities(profile_kwargs["experimental_config"])
+                backend = create_roofline_backend(torch)
+                capability = backend.probe(torch)
+                self._backend = backend
+                if capability.status == "ok":
+                    profile_kwargs = backend.build_profiler_kwargs(profile_kwargs, torch)
             try:
                 self._profiler = torch.profiler.profile(**profile_kwargs)
 
@@ -272,6 +264,7 @@ class ProfilerController:
                     status=status,
                     error=error,
                     analysis=self._analysis,
+                    backend=self._backend,
                 )
                 get_session_store().add_capture(capture, hotspots, counters, rooflines)
                 logger.info(
@@ -308,37 +301,6 @@ def _export_chrome_trace(profiler: Any) -> Optional[str]:
             os.unlink(tmp_path)
         except OSError:
             pass
-
-
-def _probe_roofline_capabilities(experimental_config: Any) -> None:
-    if not torch.cuda.is_available():
-        raise RuntimeError("roofline counters require an available CUDA device")
-    activities = [
-        torch.profiler.ProfilerActivity.CPU,
-        torch.profiler.ProfilerActivity.CUDA,
-    ]
-    try:
-        probe = torch.profiler.profile(
-            activities=activities,
-            experimental_config=experimental_config,
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            "roofline capability check failed: PyTorch/Kineto rejected "
-            "CUPTI Range Profiler or the requested metrics"
-        ) from exc
-    try:
-        probe.__enter__()
-    except Exception as exc:
-        raise RuntimeError(
-            "roofline capability check failed: PyTorch/Kineto rejected "
-            "CUPTI Range Profiler or the requested metrics"
-        ) from exc
-    finally:
-        try:
-            probe.__exit__(None, None, None)
-        except Exception as exc:
-            logger.debug("roofline capability probe cleanup failed: %s", exc)
 
 
 _CONTROLLER: Optional[ProfilerController] = None

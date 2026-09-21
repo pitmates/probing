@@ -55,6 +55,10 @@ _COLUMN_DOCS: dict[str, dict[str, str]] = {
         "roofline_unassociated_kernels": "Counter kernels without an operator association",
         "roofline_missing_metrics": "Missing required metric names as JSON array",
         "roofline_parser_version": "Roofline parser and HTA alignment version",
+        "counter_backend": "cuda | rocm | none",
+        "device_vendor": "nvidia | amd | unknown",
+        "device_model": "GPU model reported by torch",
+        "device_arch": "sm_XX | gfxXXX | unknown",
     },
     "profile_hotspot": {
         "capture_id": "FK to profile_capture",
@@ -156,6 +160,10 @@ def _capture_to_dict(row: CaptureRecord) -> dict[str, Any]:
         "roofline_unassociated_kernels": row.roofline_unassociated_kernels,
         "roofline_missing_metrics": row.roofline_missing_metrics,
         "roofline_parser_version": row.roofline_parser_version,
+        "counter_backend": row.counter_backend,
+        "device_vendor": row.device_vendor,
+        "device_model": row.device_model,
+        "device_arch": row.device_arch,
     }
 
 

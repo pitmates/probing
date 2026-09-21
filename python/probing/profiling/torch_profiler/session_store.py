@@ -42,6 +42,10 @@ class CaptureRecord:
     roofline_unassociated_kernels: int = 0
     roofline_missing_metrics: str = "[]"
     roofline_parser_version: str = ""
+    counter_backend: str = "none"
+    device_vendor: str = ""
+    device_model: str = ""
+    device_arch: str = ""
 
 
 @dataclass
@@ -189,38 +193,55 @@ def reset_session_store_for_tests() -> None:
             _STORE.clear()
 
 
-def roofline_peaks() -> tuple[float | None, float | None]:
-    raw = os.environ.get("PROBING_TORCH_ROOFLINE_PEAKS_JSON", "").strip()
+def roofline_peaks(
+    backend: str | None = None,
+    device_arch: str | None = None,
+) -> tuple[float | None, float | None]:
+    if backend == "rocm":
+        raw = os.environ.get("PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON", "").strip()
+    else:
+        raw = os.environ.get("PROBING_TORCH_ROOFLINE_PEAKS_JSON", "").strip()
     if not raw:
         return None, None
     try:
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             raise ValueError("peaks JSON must be an object")
-        entry = parsed.get("fp16_tensor_dense")
+        if backend is not None and parsed.get("backend") not in {None, backend}:
+            raise ValueError(
+                f"peaks JSON backend {parsed.get('backend')!r} does not match {backend!r}"
+            )
+        if device_arch is not None and parsed.get("device_arch") not in {None, device_arch}:
+            raise ValueError(
+                "peaks JSON device_arch "
+                f"{parsed.get('device_arch')!r} does not match {device_arch!r}"
+            )
+        if isinstance(parsed.get("peaks"), dict):
+            entry = parsed["peaks"].get("fp16_tensor_dense")
+        else:
+            entry = parsed.get("fp16_tensor_dense")
         if not isinstance(entry, dict):
             raise ValueError("peaks JSON missing fp16_tensor_dense")
         peak_flops = entry.get("peak_flops")
         peak_bytes = entry.get("peak_bytes_per_sec")
-        if (
-            not isinstance(peak_flops, (int, float))
-            or not isinstance(peak_bytes, (int, float))
-            or peak_flops <= 0
-            or peak_bytes <= 0
+        if not isinstance(peak_flops, (int, float)) or not isinstance(
+            peak_bytes, (int, float)
         ):
-            raise ValueError("peaks must be positive numbers")
-        unknown = set(parsed) - {"fp16_tensor_dense"}
-        if unknown:
+            raise ValueError("peaks must be numbers")
+        if peak_flops == 0 or peak_bytes == 0:
             import logging
 
             logging.getLogger(__name__).debug(
-                "ignore unsupported roofline peak kinds: %s", sorted(unknown)
+                "roofline peaks are uncalibrated (zero); treating as unavailable"
             )
+            return None, None
+        if peak_flops < 0 or peak_bytes < 0:
+            raise ValueError("peaks must be non-negative numbers")
         return float(peak_flops), float(peak_bytes)
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         import logging
 
         logging.getLogger(__name__).warning(
-            "invalid PROBING_TORCH_ROOFLINE_PEAKS_JSON: %s", exc
+            "invalid roofline peaks JSON: %s", exc
         )
         return None, None
