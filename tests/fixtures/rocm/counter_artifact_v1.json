@@ -1,0 +1,47 @@
+{
+  "format": "probing-rocm-sidecar-v1",
+  "device": {
+    "vendor": "amd",
+    "arch": "gfx936"
+  },
+  "counters": [
+    {
+      "kernel_name": "Cijk_Alik_Bljk_HBH",
+      "correlation_id": 41,
+      "op_name": "aten::mm",
+      "calls": 3,
+      "duration_ns": 12345000,
+      "metrics": {
+        "SQ_INSTS_VALU": 1536,
+        "TCC_EA_RDREQ_32B": 10,
+        "TCC_EA_RDREQ": 15,
+        "TCC_EA_WRREQ_64B": 10,
+        "TCC_EA_WRREQ": 20
+      }
+    },
+    {
+      "kernel_name": "elementwise_add_kernel",
+      "correlation_id": 42,
+      "op_name": "aten::add",
+      "calls": 1,
+      "duration_ns": 500000,
+      "metrics": {
+        "SQ_INSTS_VALU": 64,
+        "TCC_EA_RDREQ_32B": 2,
+        "TCC_EA_RDREQ": 2,
+        "TCC_EA_WRREQ_64B": 0,
+        "TCC_EA_WRREQ": 2
+      }
+    },
+    {
+      "kernel_name": "unattributed_kernel",
+      "duration_ns": 700000,
+      "metrics": {
+        "TCC_EA_RDREQ_32B": 1,
+        "TCC_EA_RDREQ": 1,
+        "TCC_EA_WRREQ_64B": 0,
+        "TCC_EA_WRREQ": 0
+      }
+    }
+  ]
+}

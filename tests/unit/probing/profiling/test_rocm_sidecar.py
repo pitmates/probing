@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,8 @@ from probing.profiling.torch_profiler.rocm_sidecar import (
     parse_counter_artifact,
     parse_counter_csv,
 )
+
+FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "rocm"
 
 DRAM_METRICS = {
     "TCC_EA_RDREQ_32B": 10,
@@ -286,6 +289,64 @@ k,1000,10,15,10,20
     rows = parse_counter_artifact(text)
     assert len(rows) == 1
     assert rows[0]["kernel_name"] == "k"
+
+
+def _fixture_rows(source: str) -> list[dict]:
+    payload = (FIXTURES / f"counter_artifact_{source}").read_text(
+        encoding="utf-8"
+    )
+    return parse_counter_artifact(payload)
+
+
+def test_json_csv_fixture_rows_match_exactly():
+    json_rows = _fixture_rows("v1.json")
+    csv_rows = _fixture_rows("legacy.csv")
+    assert len(json_rows) == len(csv_rows) == 3
+    for json_row, csv_row in zip(json_rows, csv_rows):
+        assert json_row["kernel_name"] == csv_row["kernel_name"]
+        assert json_row["op_name"] == csv_row["op_name"]
+        assert json_row["correlation_id"] == csv_row["correlation_id"]
+        assert json_row["duration_ns"] == csv_row["duration_ns"]
+        assert json_row["calls"] == csv_row["calls"]
+        assert json_row["metrics"] == csv_row["metrics"]
+
+
+def test_fixture_counter_records_preserve_expected_values():
+    rows = _fixture_rows("v1.json")
+    counters, missing = build_counter_records(
+        rows,
+        capture_id="parity-capture",
+        local_step=11,
+        global_step=111,
+        rank=3,
+        role="dp=3",
+    )
+    assert missing == []
+    assert [c.kernel_name for c in counters] == [
+        "Cijk_Alik_Bljk_HBH",
+        "elementwise_add_kernel",
+        "unattributed_kernel",
+    ]
+    assert [c.calls for c in counters] == [3, 1, 1]
+    assert [c.duration_us for c in counters] == [12345, 500, 700]
+    assert [c.dram_bytes for c in counters] == [
+        (10 * 32 + 5 * 64) + (10 * 32 + 10 * 64),
+        (2 * 32) + (2 * 32),
+        32,
+    ]
+    assert all(c.flops is None for c in counters)
+    assert json.loads(counters[0].op_stack) == ["aten::mm"]
+    assert counters[2].op_name == ""
+    assert counters[2].bottom_level_op == ""
+
+
+def test_fixture_csv_preserves_correlation_and_calls():
+    rows = _fixture_rows("legacy.csv")
+    assert rows[0]["correlation_id"] == 41
+    assert rows[0]["calls"] == 3
+    assert rows[0]["op_name"] == "aten::mm"
+    assert rows[2]["correlation_id"] is None
+    assert rows[2]["op_name"] == ""
 
 
 def test_rocm_backend_compiles_csv_facts():

@@ -1,0 +1,4 @@
+Index,KernelName,correlation_id,op_name,calls,DurationNs,SQ_INSTS_VALU,TCC_EA_RDREQ_32B,TCC_EA_RDREQ,TCC_EA_WRREQ_64B,TCC_EA_WRREQ
+0,Cijk_Alik_Bljk_HBH,41,aten::mm,3,12345000,1536,10,15,10,20
+1,elementwise_add_kernel,42,aten::add,1,500000,64,2,2,0,2
+2,unattributed_kernel,,,1,700000,,1,1,0,0
