@@ -12,6 +12,7 @@ import traceback
 from typing import Dict, List, Optional
 
 from probing.handlers.router import ext_handler, handle_request
+from probing.profiling.torch_profiler.fanout import cluster_fanout_enabled
 
 log = logging.getLogger(__name__)
 
@@ -424,20 +425,37 @@ def start_pytorch_profile(
 
 @ext_handler("pythonext", "pytorch/profile/start")
 def start_pytorch_profile_v2(
-    steps: int = 1, trigger: str = "http", analysis: Optional[str] = None
+    steps: int = 1,
+    trigger: str = "http",
+    analysis: Optional[str] = None,
+    cluster: bool = False,
 ) -> str:
-    """Start on-demand torch.profiler capture."""
-    return start_pytorch_profile(steps=steps, trigger=trigger, analysis=analysis)
+    """Start on-demand torch.profiler capture, optionally fanning out to peers."""
+    result = json.loads(
+        start_pytorch_profile(steps=steps, trigger=trigger, analysis=analysis)
+    )
+    if cluster or cluster_fanout_enabled():
+        from probing.profiling.torch_profiler.fanout import fanout_start
+
+        result["cluster_fanout"] = fanout_start(
+            steps=steps, trigger=trigger, analysis=analysis
+        )
+    return json.dumps(result)
 
 
 @ext_handler("pythonext", "pytorch/profile/stop")
-def stop_pytorch_profile() -> str:
+def stop_pytorch_profile(cluster: bool = False) -> str:
     """Stop profiler early and materialize profile_capture / profile_hotspot rows."""
     try:
         from probing.profiling.torch_profiler import get_controller
 
         capture_id = get_controller().stop()
-        return json.dumps({"success": True, "capture_id": capture_id})
+        result: dict = {"success": True, "capture_id": capture_id}
+        if cluster or cluster_fanout_enabled():
+            from probing.profiling.torch_profiler.fanout import fanout_stop
+
+            result["cluster_fanout"] = fanout_stop()
+        return json.dumps(result)
     except Exception as e:
         return json.dumps(
             {"success": False, "error": str(e), "traceback": traceback.format_exc()}

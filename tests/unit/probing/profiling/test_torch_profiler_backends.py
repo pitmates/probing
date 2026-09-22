@@ -19,6 +19,12 @@ from probing.profiling.torch_profiler.backends import (
 )
 
 
+def _backend() -> RocmRooflineBackend:
+    return RocmRooflineBackend(
+        BackendInfo("amd", "BW", "gfx936", "rocm")
+    )
+
+
 def _fake_torch(*, hip=None, cuda=None, cuda_available=True, props=None):
     fake = MagicMock()
     fake.version.hip = hip
@@ -209,3 +215,93 @@ def test_unavailable_backend_carries_diagnostic():
         role="dp=0",
     )
     assert compiled.error == info.diagnostic
+
+def test_rocm_probe_runs_probe_command_when_configured(monkeypatch):
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "1")
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCPROF_CMD", "rocprofv2 --output {output}"
+    )
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD", "rocprofv2 --list-counters"
+    )
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.backends._run_rocm_probe",
+        lambda command, timeout_s=15.0: (False, "rejected"),
+    )
+    info = BackendInfo("amd", "BW", "gfx936", "rocm")
+    result = RocmRooflineBackend(info).probe(_fake_torch(hip="6.3.26093"))
+    assert result.status == "unavailable"
+    assert "probe failed" in result.error
+
+
+def test_rocm_probe_ok_when_probe_command_succeeds(monkeypatch):
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "1")
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCPROF_CMD", "rocprofv2 --output {output}"
+    )
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD", "rocprofv2 --list-counters"
+    )
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.backends._run_rocm_probe",
+        lambda command, timeout_s=15.0: (True, ""),
+    )
+    info = BackendInfo("amd", "BW", "gfx936", "rocm")
+    result = RocmRooflineBackend(info).probe(_fake_torch(hip="6.3.26093"))
+    assert result.status == "ok"
+
+
+def test_rocm_backend_builds_roofline_when_calibrated(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",
+        json.dumps({"SQ_INSTS_VALU": 2}),
+    )
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON",
+        json.dumps(
+            {
+                "backend": "rocm",
+                "device_arch": "gfx936",
+                "peaks": {
+                    "fp16_tensor_dense": {
+                        "peak_flops": 1000,
+                        "peak_bytes_per_sec": 10000,
+                    }
+                },
+            }
+        ),
+    )
+    backend = _backend()
+    result = backend.compile_counter_rows(
+        _rocm_document(
+            [
+                {
+                    "kernel_name": "k",
+                    "op_name": "aten::mm",
+                    "duration_ns": 1000000,
+                    "metrics": {
+                        "SQ_INSTS_VALU": 500,
+                        "TCC_EA_RDREQ_32B": 10,
+                        "TCC_EA_RDREQ": 15,
+                        "TCC_EA_WRREQ_64B": 10,
+                        "TCC_EA_WRREQ": 20,
+                    },
+                }
+            ]
+        ),
+        capture_id="c",
+        local_step=1,
+        global_step=1,
+        rank=0,
+        role="",
+    )
+    assert result.counters[0].flops == 1000
+    assert len(result.rooflines) == 1
+    assert result.rooflines[0].flops == 1000
+    assert result.rooflines[0].bottleneck in {"compute", "memory", "balanced"}
+
+
+def _rocm_document(rows):
+    from probing.profiling.torch_profiler.rocm_sidecar import SIDECAR_FORMAT
+
+    return {"format": SIDECAR_FORMAT, "counters": rows}

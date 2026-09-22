@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+
 from probing.profiling.torch_profiler.rocm_metrics import (
     rocm_dram_bytes,
+    rocm_flop_weights,
     rocm_instruction_flops,
 )
 
@@ -37,3 +40,20 @@ def test_rocm_dram_bytes_requires_all_four_counters():
 
 def test_rocm_instruction_flops_stays_uncalibrated():
     assert rocm_instruction_flops({"SQ_INSTS_VALU": 100}) is None
+
+def test_rocm_flop_weights_parse_calibration(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",
+        json.dumps({"SQ_INSTS_VALU": 2, "SQ_INSTS_SALU": 1}),
+    )
+    assert rocm_flop_weights() == {"SQ_INSTS_VALU": 2, "SQ_INSTS_SALU": 1}
+    assert rocm_instruction_flops({"SQ_INSTS_VALU": 4, "SQ_INSTS_SALU": 3}) == 11
+
+
+def test_rocm_flop_weights_invalid_env_is_empty(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",
+        "not-json",
+    )
+    assert rocm_flop_weights() == {}
+    assert rocm_instruction_flops({"SQ_INSTS_VALU": 4}) is None

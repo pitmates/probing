@@ -7,6 +7,8 @@ capability probe and unit tests.
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Mapping
 
 
@@ -25,6 +27,8 @@ _READ_32B = "TCC_EA_RDREQ_32B"
 _READ_TOTAL = "TCC_EA_RDREQ"
 _WRITE_64B = "TCC_EA_WRREQ_64B"
 _WRITE_TOTAL = "TCC_EA_WRREQ"
+
+ROCM_FLOP_WEIGHTS_ENV = "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON"
 
 ROCM_DRAM_METRICS: tuple[str, ...] = (
     _READ_32B,
@@ -65,10 +69,55 @@ def rocm_dram_bytes(metrics: Mapping[str, int | float]) -> int | None:
     return read_bytes + write_bytes
 
 
-def rocm_instruction_flops(_metrics: Mapping[str, int | float]) -> int | None:
-    """Return ``None``: instruction-to-FLOP weights are not calibrated yet.
+def rocm_flop_weights() -> dict[str, int]:
+    """Parse explicit instruction-to-FLOP weights from the environment.
 
-    The v1 implementation must not fabricate an FLOPs value for ROCm before the
-    fixture/E2E validation described in ``roofline-backends.zh.md``.
+    ``PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON`` maps a ROCm instruction
+    counter name to FLOPs per instruction, for example
+    ``{"SQ_INSTS_VALU": 2, "SQ_INSTS_SALU": 1}``. When the variable is unset
+    or invalid the result is empty and no FLOPs are fabricated.
     """
-    return None
+    raw = os.environ.get(ROCM_FLOP_WEIGHTS_ENV, "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    weights: dict[str, int] = {}
+    for name, value in parsed.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        if value < 0:
+            continue
+        weights[name.strip()] = int(value)
+    return weights
+
+
+def rocm_instruction_flops(metrics: Mapping[str, int | float]) -> int | None:
+    """Return calibrated FLOPs, or ``None`` when no weights are configured.
+
+    v1 ships with no default weights, so ROCm roofline produces counter facts
+    only until an operator supplies the calibration JSON for their device.
+    """
+    weights = rocm_flop_weights()
+    if not weights:
+        return None
+    total = 0.0
+    for name, weight in weights.items():
+        value = metrics.get(name)
+        if value is None:
+            continue
+        try:
+            count = float(value)
+        except (TypeError, ValueError):
+            continue
+        if count < 0:
+            continue
+        total += count * weight
+    return int(total)

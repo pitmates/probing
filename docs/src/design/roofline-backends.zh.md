@@ -140,13 +140,15 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
   - `PROBING_TORCH_ROOFLINE_ROCM_METRICS`
   - `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON`
   - `PROBING_TORCH_ROOFLINE_ROCPROF_CMD`
+  - `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD`（可选 dry-run 能力探测）
+  - `PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON`（显式指令→FLOP 校准）
   - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（experimental sidecar 开关）
+  - `PROBING_TORCH_PROFILER_CLUSTER_FANOUT=0|1`（`profile/start` 按 rank fan-out）
 - 同步更新 `env-vars`、`sql-tables`、`semantic_catalog` 和 `operator_roofline` skill。
 
 ## 9. 多 rank
 
-- 现有 `profile/start` 只作用于接收请求的进程。
-- ROCm sidecar 需要按 rank 启动，复用 torchrun cluster 的 rank endpoint 做 fan-out。
+- 现有 `profile/start` 默认只作用于接收请求的进程；请求传 `cluster=true`（或设置 `PROBING_TORCH_PROFILER_CLUSTER_FANOUT=1`）后，从本地 `GET /apis/nodes` 发现 peer 并逐个触发 `profile/start?cluster=false`。
 - 每 rank 的 `profile_capture` 保持独立，查询时通过 `cluster query` 聚合。
 - 不在 SQL 层合成一条假全局 capture。
 

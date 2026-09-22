@@ -477,6 +477,11 @@ def compile_from_profiler(
             global_step=capture.global_step,
             rank=capture.rank,
             role=capture.role,
+            timeline_events=(
+                raw_events
+                if backend.info.counter_source == "rocm"
+                else None
+            ),
         )
         capture.roofline_quality = result.quality
         capture.roofline_counter_events = result.counter_events
@@ -502,6 +507,63 @@ def compile_from_profiler(
         rooflines = []
         roofline_quality = "unavailable"
     return capture, hotspots, counters, rooflines, roofline_quality
+
+
+def join_rocm_rows_with_timeline(
+    rows: list[dict[str, Any]], timeline_events: list[Any]
+) -> list[dict[str, Any]]:
+    """Associate ROCm counter rows with Kineto CPU ops.
+
+    Preference order matches ``roofline-backends.zh.md``: keep an explicit
+    ``op_name``, otherwise match by ``correlation_id``, and finally fall back
+    to the nearest preceding CPU launch by timestamp. Rows are mutated in
+    place and returned.
+    """
+    cpu_by_external_id: dict[int, list[tuple[str, ...]]] = {}
+    launch_stack_by_timestamp: list[tuple[int, tuple[str, ...]]] = []
+    for event in timeline_events or []:
+        op_name = _cpu_op_name(event)
+        if op_name is None:
+            continue
+        stack = _event_op_stack(event, op_name)
+        external_id = _event_external_id(event)
+        timestamp = _event_timestamp_us(event)
+        if external_id is not None:
+            cpu_by_external_id.setdefault(external_id, []).append(tuple(stack))
+        if timestamp is not None:
+            launch_stack_by_timestamp.append((timestamp, tuple(stack)))
+
+    launch_stack_by_timestamp.sort(key=lambda item: item[0])
+    timestamps = [item[0] for item in launch_stack_by_timestamp]
+    for row in rows:
+        if row.get("op_name"):
+            continue
+        stack: tuple[str, ...] | None = None
+        correlation_id = row.get("correlation_id")
+        if correlation_id is not None:
+            try:
+                correlation_id = int(correlation_id)
+            except (TypeError, ValueError):
+                correlation_id = None
+        if correlation_id is not None:
+            stacks = cpu_by_external_id.get(correlation_id)
+            if stacks:
+                stack = stacks[-1]
+        if stack is None and timestamps:
+            row_timestamp = row.get("timestamp_us")
+            if row_timestamp is not None:
+                try:
+                    row_timestamp = int(row_timestamp)
+                except (TypeError, ValueError):
+                    row_timestamp = None
+                if row_timestamp is not None:
+                    position = bisect_right(timestamps, row_timestamp)
+                    if position:
+                        stack = launch_stack_by_timestamp[position - 1][1]
+        if stack:
+            row["op_name"] = stack[-1]
+            row["op_stack"] = list(stack)
+    return rows
 
 
 def _compile_counter_rows(

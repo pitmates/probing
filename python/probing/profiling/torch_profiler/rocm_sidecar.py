@@ -60,7 +60,7 @@ import io
 import json
 from typing import Any
 
-from .rocm_metrics import ROCM_DRAM_METRICS, rocm_dram_bytes
+from .rocm_metrics import ROCM_DRAM_METRICS, rocm_dram_bytes, rocm_instruction_flops
 from .session_store import CounterRecord
 
 SIDECAR_FORMAT = "probing-rocm-sidecar-v1"
@@ -84,6 +84,8 @@ _IGNORED_CSV_COLUMNS = {
 }
 
 _DURATION_COLUMNS = ("durationns", "duration_ns", "duration", "kernelduration")
+_TIMESTAMP_COLUMNS = ("timestamp", "ts")
+_TIMESTAMP_NS_COLUMNS = ("timestamp_ns", "timestampns")
 
 
 def _coerce_number(value: str) -> int | float | None:
@@ -132,11 +134,21 @@ def parse_counter_csv(text: str) -> list[dict[str, Any]]:
     op_column = _find_column(headers, ("opname", "op_name"))
     correlation_column = _find_column(headers, ("correlation_id", "correlationid"))
     calls_column = _find_column(headers, ("calls",))
+    timestamp_column = _find_column(headers, _TIMESTAMP_COLUMNS)
+    timestamp_ns_column = _find_column(headers, _TIMESTAMP_NS_COLUMNS)
+    metadata_columns = {
+        kernel_column,
+        duration_column,
+        op_column,
+        correlation_column,
+        calls_column,
+        timestamp_column,
+        timestamp_ns_column,
+    }
     metric_columns = [
         (index, name)
         for index, name in enumerate(headers)
-        if index
-        not in {kernel_column, duration_column, op_column, correlation_column, calls_column}
+        if index not in metadata_columns
         and name.strip().lower() not in _IGNORED_CSV_COLUMNS
     ]
     if not metric_columns:
@@ -165,12 +177,16 @@ def parse_counter_csv(text: str) -> list[dict[str, Any]]:
             if calls_column is not None and padded[calls_column].strip()
             else 1
         )
+        timestamp_us = _timestamp_us_from_columns(
+            padded, timestamp_column, timestamp_ns_column
+        )
         parsed.append(
             {
                 "kernel_name": kernel_name,
                 "op_name": op_name,
                 "correlation_id": correlation_id,
                 "duration_ns": duration_ns,
+                "timestamp_us": timestamp_us,
                 "calls": calls,
                 "metrics": metrics,
             }
@@ -208,6 +224,7 @@ def _parse_document(document: dict[str, Any]) -> list[dict[str, Any]]:
                 "op_name": item.get("op_name") or "",
                 "correlation_id": item.get("correlation_id"),
                 "duration_ns": item.get("duration_ns"),
+                "timestamp_us": _row_timestamp_us(item),
                 "calls": _positive_int(item.get("calls")),
                 "metrics": metrics,
             }
@@ -239,6 +256,34 @@ def parse_counter_artifact(payload: str | dict[str, Any] | list[dict[str, Any]])
     raise ValueError("sidecar payload must be JSON, CSV, or a list of row dicts")
 
 
+def _timestamp_us_from_columns(
+    padded: list[str],
+    timestamp_column: int | None,
+    timestamp_ns_column: int | None,
+) -> int | None:
+    if timestamp_ns_column is not None:
+        value = _coerce_number(padded[timestamp_ns_column])
+        if value is not None and value >= 0:
+            return int(value // 1000)
+    if timestamp_column is not None:
+        value = _coerce_number(padded[timestamp_column])
+        if value is not None and value >= 0:
+            return int(value)
+    return None
+
+
+def _row_timestamp_us(item: dict[str, Any]) -> int | None:
+    if item.get("timestamp_ns") is not None:
+        value = _coerce_number(str(item.get("timestamp_ns")))
+        if value is not None and value >= 0:
+            return int(value // 1000)
+    if item.get("timestamp_us") is not None:
+        value = _coerce_number(str(item.get("timestamp_us")))
+        if value is not None and value >= 0:
+            return int(value)
+    return None
+
+
 def _duration_us(duration_ns: Any) -> int | None:
     if duration_ns is None:
         return None
@@ -262,8 +307,8 @@ def build_counter_records(
 ) -> tuple[list[CounterRecord], list[str]]:
     """Compile normalized rows into profile_counter fact rows.
 
-    Returns (counters, missing_metrics). flops stays None because ROCm
-    instruction-to-FLOP weights are not calibrated yet.
+    Returns (counters, missing_metrics). flops is ``None`` unless the operator
+    supplies ``PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON``.
     """
     counters: list[CounterRecord] = []
     missing_metrics: set[str] = set()
@@ -275,7 +320,9 @@ def build_counter_records(
                 name for name in ROCM_DRAM_METRICS if name not in metrics
             )
         op_name = row.get("op_name") or ""
-        op_stack = [op_name] if op_name else []
+        op_stack = list(row.get("op_stack") or []) or ([op_name] if op_name else [])
+        top_level_op = op_stack[0] if op_stack else op_name
+        bottom_level_op = op_stack[-1] if op_stack else op_name
         counters.append(
             CounterRecord(
                 capture_id=capture_id,
@@ -285,12 +332,12 @@ def build_counter_records(
                 role=role,
                 kernel_name=row["kernel_name"],
                 op_name=op_name,
-                top_level_op=op_name,
-                bottom_level_op=op_name,
+                top_level_op=top_level_op,
+                bottom_level_op=bottom_level_op,
                 op_stack=json.dumps(op_stack, ensure_ascii=False),
                 calls=_positive_int(row.get("calls")),
                 duration_us=_duration_us(row.get("duration_ns")),
-                flops=None,
+                flops=rocm_instruction_flops(metrics),
                 dram_bytes=dram_bytes,
                 metrics=json.dumps(metrics, separators=(",", ":")),
             )

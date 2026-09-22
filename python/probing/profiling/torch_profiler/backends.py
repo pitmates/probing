@@ -9,12 +9,42 @@ gated behind ``PROBING_TORCH_ROOFLINE_ROCM_PROFILE`` and
 from __future__ import annotations
 
 import os
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from .rocm_metrics import ROCM_DEFAULT_METRICS
 from .rocm_runner import sidecar_command, sidecar_enabled
+
+ROCM_PROBE_CMD_ENV = "PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD"
+
+
+def _rocm_probe_command() -> Optional[str]:
+    return os.environ.get(ROCM_PROBE_CMD_ENV, "").strip() or None
+
+
+def _run_rocm_probe(command: str, timeout_s: float = 15.0) -> tuple[bool, str]:
+    """Run an operator-configured dry-run probe; return (ok, diagnostic)."""
+    try:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"rocprofiler probe timed out after {timeout_s}s"
+    except Exception as exc:
+        return False, f"failed to run rocprofiler probe: {exc}"
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        return (
+            False,
+            f"rocprofiler probe exited with {completed.returncode}: {detail[:300]}",
+        )
+    return True, ""
 
 
 @dataclass(frozen=True)
@@ -193,6 +223,7 @@ class RooflineBackend(ABC):
         global_step: int,
         rank: int,
         role: str,
+        timeline_events: Any = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -276,7 +307,9 @@ class CudaRooflineBackend(RooflineBackend):
         global_step: int,
         rank: int,
         role: str,
+        timeline_events: Any = None,
     ) -> Any:
+        del timeline_events
         from .adaptor import _compile_counter_rows
 
         return _compile_counter_rows(
@@ -321,6 +354,18 @@ class RocmRooflineBackend(RooflineBackend):
                 status="unavailable",
                 error=self._capability_error,
             )
+        probe_command = _rocm_probe_command()
+        if probe_command:
+            probe_ok, probe_error = _run_rocm_probe(probe_command)
+            if not probe_ok:
+                self._capability_error = (
+                    "rocprofiler capability probe failed: " + probe_error
+                )
+                return CapabilityResult(
+                    backend=self.info,
+                    status="unavailable",
+                    error=self._capability_error,
+                )
         self._capability_error = ""
         return CapabilityResult(
             backend=self.info,
@@ -339,8 +384,12 @@ class RocmRooflineBackend(RooflineBackend):
         global_step: int,
         rank: int,
         role: str,
+        timeline_events: Any = None,
     ) -> Any:
-        from .adaptor import _RooflineCompileResult
+        from .adaptor import (
+            _RooflineCompileResult,
+            join_rocm_rows_with_timeline,
+        )
         from .rocm_sidecar import build_counter_records, parse_counter_artifact
 
         if not raw_events:
@@ -380,6 +429,7 @@ class RocmRooflineBackend(RooflineBackend):
                 missing_metrics=[],
                 error="rocm sidecar artifact contained no counter rows",
             )
+        rows = join_rocm_rows_with_timeline(rows, timeline_events or [])
         counters, missing_metrics = build_counter_records(
             rows,
             capture_id=capture_id,
@@ -390,15 +440,38 @@ class RocmRooflineBackend(RooflineBackend):
         )
         associated = sum(1 for row in rows if row.get("op_name"))
         unassociated = len(rows) - associated
+        rooflines: list[Any] = []
+        quality = "partial"
+        error = ""
+        if any(counter.flops is not None for counter in counters):
+            peaks = self.platform_peaks(self.info)
+            if peaks[0] is None or peaks[1] is None:
+                error = (
+                    "ROCm FLOP weights are calibrated but platform peaks are "
+                    "missing or uncalibrated; roofline efficiency was not computed"
+                )
+            else:
+                rooflines = _build_rocm_roofline_records(
+                    counters,
+                    peaks=peaks,
+                    quality="ok" if not missing_metrics and not unassociated else "partial",
+                    capture_id=capture_id,
+                    local_step=local_step,
+                    global_step=global_step,
+                    rank=rank,
+                    role=role,
+                )
+                if not missing_metrics and not unassociated:
+                    quality = "ok"
         return _RooflineCompileResult(
             counters=counters,
-            rooflines=[],
-            quality="partial",
+            rooflines=rooflines,
+            quality=quality,
             counter_events=len(counters),
             associated_kernels=associated,
             unassociated_kernels=unassociated,
             missing_metrics=missing_metrics,
-            error="",
+            error=error,
         )
 
 
@@ -431,8 +504,9 @@ class UnavailableRooflineBackend(RooflineBackend):
         global_step: int,
         rank: int,
         role: str,
+        timeline_events: Any = None,
     ) -> Any:
-        del raw_events, capture_id, local_step, global_step, rank, role
+        del raw_events, capture_id, local_step, global_step, rank, role, timeline_events
         from .adaptor import _RooflineCompileResult
 
         return _RooflineCompileResult(
@@ -445,6 +519,80 @@ class UnavailableRooflineBackend(RooflineBackend):
             missing_metrics=[],
             error=self._capability_error or "roofline counters are not supported on this device",
         )
+
+
+def _build_rocm_roofline_records(
+    counters: list[Any],
+    *,
+    peaks: tuple[float | None, float | None],
+    quality: str,
+    capture_id: str,
+    local_step: int,
+    global_step: int,
+    rank: int,
+    role: str,
+) -> list[Any]:
+    """Derive ROCm roofline efficiency rows only when calibration is present."""
+    from .adaptor import _balanced_threshold
+    from .session_store import RooflineRecord
+
+    peak_flops, peak_bytes = peaks
+    if peak_flops is None or peak_bytes is None:
+        return []
+    threshold = _balanced_threshold()
+    rooflines: list[Any] = []
+    for counter in counters:
+        if (
+            counter.flops is None
+            or counter.dram_bytes is None
+            or counter.duration_us is None
+            or counter.duration_us <= 0
+        ):
+            continue
+        arithmetic_intensity = (
+            counter.flops / counter.dram_bytes
+            if counter.dram_bytes > 0
+            else None
+        )
+        duration_sec = counter.duration_us / 1_000_000
+        achieved_flops = counter.flops / duration_sec
+        achieved_bytes = counter.dram_bytes / duration_sec
+        boundedness: float | None = None
+        bottleneck = "unknown"
+        if peak_flops and peak_bytes:
+            compute_eff = achieved_flops / peak_flops
+            memory_eff = achieved_bytes / peak_bytes
+            boundedness = min(compute_eff, memory_eff)
+            if abs(compute_eff - memory_eff) < (1.0 - threshold):
+                bottleneck = "balanced"
+            elif compute_eff > memory_eff:
+                bottleneck = "compute"
+            else:
+                bottleneck = "memory"
+        rooflines.append(
+            RooflineRecord(
+                capture_id=capture_id,
+                local_step=local_step,
+                global_step=global_step,
+                rank=rank,
+                role=role,
+                op_name=counter.op_name,
+                kernel_name=counter.kernel_name,
+                calls=counter.calls,
+                self_duration_us=counter.duration_us,
+                flops=counter.flops,
+                dram_bytes=counter.dram_bytes,
+                arithmetic_intensity=arithmetic_intensity,
+                achieved_flops=achieved_flops,
+                achieved_bytes_per_sec=achieved_bytes,
+                peak_flops=peak_flops,
+                peak_bytes_per_sec=peak_bytes,
+                boundedness=boundedness,
+                bottleneck=bottleneck,
+                data_quality=quality,
+            )
+        )
+    return rooflines
 
 
 detect = detect_backend

@@ -14,6 +14,7 @@ from probing.profiling.torch_profiler.adaptor import (
     compile_from_profiler,
     compile_key_averages,
     compile_roofline_from_trace,
+    join_rocm_rows_with_timeline,
 )
 from probing.profiling.torch_profiler.session_store import (
     CaptureRecord,
@@ -657,3 +658,30 @@ def test_truncated_roofline_keeps_facts_but_not_efficiency(stub_coords, monkeypa
     assert capture.roofline_quality == "truncated"
     assert len(counters) == 1
     assert rooflines == []
+
+def test_join_rocm_rows_prefers_correlation_id(stub_coords):
+    del stub_coords
+    rows = [{"kernel_name": "k", "op_name": "", "correlation_id": 11, "metrics": {}}]
+    events = [
+        _FakeEvent("aten::mm", args={"External id": 11}, time_range=_FakeTimeRange(100, 150)),
+    ]
+    joined = join_rocm_rows_with_timeline(rows, events)
+    assert joined[0]["op_name"] == "aten::mm"
+    assert joined[0]["op_stack"] == ["aten::mm"]
+
+
+def test_join_rocm_rows_falls_back_to_timestamp(stub_coords):
+    del stub_coords
+    rows = [{"kernel_name": "k", "op_name": "", "timestamp_us": 200, "metrics": {}}]
+    events = [
+        _FakeEvent("aten::add", time_range=_FakeTimeRange(100, 150)),
+    ]
+    joined = join_rocm_rows_with_timeline(rows, events)
+    assert joined[0]["op_name"] == "aten::add"
+
+
+def test_join_rocm_rows_keeps_explicit_op_name(stub_coords):
+    del stub_coords
+    rows = [{"kernel_name": "k", "op_name": "aten::mul", "metrics": {}}]
+    joined = join_rocm_rows_with_timeline(rows, [])
+    assert joined[0]["op_name"] == "aten::mul"

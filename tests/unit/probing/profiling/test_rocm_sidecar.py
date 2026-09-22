@@ -365,3 +365,46 @@ def test_rocm_backend_compiles_csv_facts():
     assert result.counter_events == 1
     assert result.counters[0].dram_bytes == DRAM_BYTES
     assert result.counters[0].flops is None
+
+def test_parse_document_preserves_timestamp_us():
+    rows = parse_counter_artifact(
+        json.dumps(
+            _document(
+                [
+                    {
+                        "kernel_name": "k",
+                        "timestamp_ns": 1234000,
+                        "metrics": DRAM_METRICS,
+                    }
+                ]
+            )
+        )
+    )
+    assert rows[0]["timestamp_us"] == 1234
+
+
+def test_build_counter_records_uses_calibrated_flops(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",
+        json.dumps({"SQ_INSTS_VALU": 2}),
+    )
+    counters, missing = build_counter_records(
+        parse_counter_artifact(
+            _document(
+                [
+                    {
+                        "kernel_name": "k",
+                        "duration_ns": 1500,
+                        "metrics": {**DRAM_METRICS, "SQ_INSTS_VALU": 10},
+                    }
+                ]
+            )
+        ),
+        capture_id="c",
+        local_step=1,
+        global_step=1,
+        rank=0,
+        role="",
+    )
+    assert missing == []
+    assert counters[0].flops == 20
