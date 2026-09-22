@@ -147,7 +147,7 @@ Non-PROBING-prefixed aliases are also recognized for Megatron compatibility:
 | `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON` | — | ROCm peak configuration: `{"backend":"rocm","device_arch":"gfx936","peaks":{...}}`. |
 | `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD` | — | Optional dry-run capability probe for the ROCm sidecar; non-zero exit marks the capture `unavailable`. |
 | `PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON` | — | Explicit ROCm instruction-to-FLOP calibration, e.g. `{"SQ_INSTS_VALU": 2}`; unset keeps `flops` NULL. |
-| `PROBING_TORCH_PROFILER_CLUSTER_FANOUT` | `0` | Fan out `pytorch/profile/start` / `stop` to peer torchrun ranks by default; `cluster=true` enables it per request. |
+| `PROBING_TORCH_PROFILER_CLUSTER_FANOUT` | `0` | Default fan-out for `pytorch/profile/start` / `stop`; request `cluster=true` forces fan-out and `cluster=false` forces local-only. |
 | `PROBING_TORCH_ROOFLINE_ROCPROF_CMD` | — | Shell template for the experimental ROCm sidecar; `{output}` is replaced with the per-session artifact directory and `{pid}` with the training process id. |
 | `PROBING_TORCH_ROOFLINE_ROCM_PROFILE` | `0` | Enable the experimental ROCm sidecar collector. |
 | `PROBING_TORCH_ROOFLINE_BALANCED_THRESHOLD` | `0.9` | Roofline balanced-classification threshold. |

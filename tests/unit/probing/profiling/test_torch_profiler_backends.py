@@ -301,6 +301,54 @@ def test_rocm_backend_builds_roofline_when_calibrated(monkeypatch):
     assert result.rooflines[0].bottleneck in {"compute", "memory", "balanced"}
 
 
+def test_rocm_backend_quality_partial_when_no_roofline_rows(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",
+        json.dumps({"SQ_INSTS_VALU": 2}),
+    )
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON",
+        json.dumps(
+            {
+                "backend": "rocm",
+                "device_arch": "gfx936",
+                "peaks": {
+                    "fp16_tensor_dense": {
+                        "peak_flops": 1000,
+                        "peak_bytes_per_sec": 10000,
+                    }
+                },
+            }
+        ),
+    )
+    backend = _backend()
+    result = backend.compile_counter_rows(
+        _rocm_document(
+            [
+                {
+                    "kernel_name": "k",
+                    "op_name": "aten::mm",
+                    "metrics": {
+                        "SQ_INSTS_VALU": 500,
+                        "TCC_EA_RDREQ_32B": 10,
+                        "TCC_EA_RDREQ": 15,
+                        "TCC_EA_WRREQ_64B": 10,
+                        "TCC_EA_WRREQ": 20,
+                    },
+                }
+            ]
+        ),
+        capture_id="c",
+        local_step=1,
+        global_step=1,
+        rank=0,
+        role="",
+    )
+    assert result.counters[0].flops == 1000
+    assert result.rooflines == []
+    assert result.quality == "partial"
+
+
 def _rocm_document(rows):
     from probing.profiling.torch_profiler.rocm_sidecar import SIDECAR_FORMAT
 

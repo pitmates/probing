@@ -60,7 +60,12 @@ import io
 import json
 from typing import Any
 
-from .rocm_metrics import ROCM_DRAM_METRICS, rocm_dram_bytes, rocm_instruction_flops
+from .rocm_metrics import (
+    ROCM_DRAM_METRICS,
+    rocm_dram_bytes,
+    rocm_flop_weights,
+    rocm_instruction_flops,
+)
 from .session_store import CounterRecord
 
 SIDECAR_FORMAT = "probing-rocm-sidecar-v1"
@@ -312,6 +317,7 @@ def build_counter_records(
     """
     counters: list[CounterRecord] = []
     missing_metrics: set[str] = set()
+    flop_weights = rocm_flop_weights()
     for row in rows:
         metrics = row["metrics"]
         dram_bytes = rocm_dram_bytes(metrics)
@@ -319,8 +325,12 @@ def build_counter_records(
             missing_metrics.update(
                 name for name in ROCM_DRAM_METRICS if name not in metrics
             )
+        if flop_weights:
+            missing_metrics.update(
+                name for name in flop_weights if name not in metrics
+            )
         op_name = row.get("op_name") or ""
-        op_stack = list(row.get("op_stack") or []) or ([op_name] if op_name else [])
+        op_stack = _normalize_op_stack(row.get("op_stack"), op_name)
         top_level_op = op_stack[0] if op_stack else op_name
         bottom_level_op = op_stack[-1] if op_stack else op_name
         counters.append(
@@ -337,9 +347,31 @@ def build_counter_records(
                 op_stack=json.dumps(op_stack, ensure_ascii=False),
                 calls=_positive_int(row.get("calls")),
                 duration_us=_duration_us(row.get("duration_ns")),
-                flops=rocm_instruction_flops(metrics),
+                flops=rocm_instruction_flops(metrics, flop_weights),
                 dram_bytes=dram_bytes,
                 metrics=json.dumps(metrics, separators=(",", ":")),
             )
         )
     return counters, sorted(missing_metrics)
+
+
+def _normalize_op_stack(raw: Any, op_name: str) -> list[str]:
+    """Coerce an ``op_stack`` value to a list of strings.
+
+    Artifacts normally provide a JSON list, but a JSON string can leak through
+    from hand-built rows; ``list("aten::mm")`` would otherwise split into
+    characters.
+    """
+    if raw is None:
+        stack: list[str] = []
+    elif isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = [raw]
+        stack = [str(item) for item in parsed] if isinstance(parsed, list) else [raw]
+    elif isinstance(raw, (list, tuple)):
+        stack = [str(item) for item in raw]
+    else:
+        stack = [str(raw)]
+    return stack or ([op_name] if op_name else [])

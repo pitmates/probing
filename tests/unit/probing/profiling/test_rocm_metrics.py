@@ -41,6 +41,7 @@ def test_rocm_dram_bytes_requires_all_four_counters():
 def test_rocm_instruction_flops_stays_uncalibrated():
     assert rocm_instruction_flops({"SQ_INSTS_VALU": 100}) is None
 
+
 def test_rocm_flop_weights_parse_calibration(monkeypatch):
     monkeypatch.setenv(
         "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",
@@ -57,3 +58,19 @@ def test_rocm_flop_weights_invalid_env_is_empty(monkeypatch):
     )
     assert rocm_flop_weights() == {}
     assert rocm_instruction_flops({"SQ_INSTS_VALU": 4}) is None
+
+
+def test_rocm_flop_weights_ignore_non_finite(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",
+        json.dumps({"SQ_INSTS_VALU": float("inf"), "SQ_INSTS_SALU": float("nan")}),
+    )
+    assert rocm_flop_weights() == {}
+
+
+def test_rocm_instruction_flops_none_when_weighted_metrics_missing(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",
+        json.dumps({"SQ_INSTS_VALU": 2}),
+    )
+    assert rocm_instruction_flops({"TCC_EA_RDREQ": 1}) is None

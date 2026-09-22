@@ -2,12 +2,18 @@
 
 ``pytorch/profile/start`` is local by design (it drives the in-process
 ``ProfilerController``). In a torchrun job the operator can request fan-out
-explicitly with ``cluster=true`` (or by setting
+with ``cluster=true`` (or by setting
 ``PROBING_TORCH_PROFILER_CLUSTER_FANOUT=1``); this module then discovers peers
 from the local ``GET /apis/nodes`` registry and asks each rank to start its own
 capture with ``cluster=false``. Every rank keeps an independent
 ``python.profile_capture`` and the operator aggregates them with
 ``cluster query``, matching roofline-backends.zh.md section 9.
+
+This lives in ``probing.handlers`` rather than ``torch_profiler`` because it is
+HTTP control-plane fan-out for the Python extension routes. The Rust
+``probing-server`` ``cluster_fanout`` service fans out SQL/dataframe queries and
+is not wired to invoke Python handler functions; bridging it would require a
+server rebuild, so the handler layer keeps a minimal stdlib-only transport here.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from urllib.request import urlopen
 logger = logging.getLogger(__name__)
 
 FANOUT_ENV = "PROBING_TORCH_PROFILER_CLUSTER_FANOUT"
+_NODES_PAGE_LIMIT = 10_000
 
 
 def cluster_fanout_enabled() -> bool:
@@ -48,7 +55,14 @@ def _local_nodes_url() -> str | None:
     port = os.environ.get("PROBING_PORT", "").strip()
     if not port:
         return None
-    return f"http://127.0.0.1:{port}/apis/nodes"
+    return f"http://127.0.0.1:{port}/apis/nodes?offset=0&limit={_NODES_PAGE_LIMIT}"
+
+
+def _rank_matches(node_rank: Any, local_rank: int) -> bool:
+    try:
+        return int(node_rank) == local_rank
+    except (TypeError, ValueError):
+        return False
 
 
 def discover_peer_addrs(timeout_s: float = 3.0) -> list[str]:
@@ -69,8 +83,7 @@ def discover_peer_addrs(timeout_s: float = 3.0) -> list[str]:
         addr = (node.get("addr") or "").strip()
         if not addr:
             continue
-        rank = node.get("rank")
-        if local_rank is not None and rank is not None and int(rank) == local_rank:
+        if local_rank is not None and _rank_matches(node.get("rank"), local_rank):
             continue
         peers.append(addr)
     return peers
@@ -91,6 +104,14 @@ def _get_json(url: str, timeout_s: float) -> tuple[int | None, Any]:
     except json.JSONDecodeError:
         payload = body[:400]
     return status, payload
+
+
+def _peer_succeeded(status: int | None, payload: Any) -> bool:
+    if status != 200:
+        return False
+    if isinstance(payload, dict) and payload.get("success") is False:
+        return False
+    return True
 
 
 def fanout_start(
@@ -114,9 +135,16 @@ def fanout_start(
             f"http://{addr}/apis/pythonext/pytorch/profile/start?{query}",
             timeout_s,
         )
-        results.append({"addr": addr, "status": status, "response": payload})
+        results.append(
+            {
+                "addr": addr,
+                "status": status,
+                "success": _peer_succeeded(status, payload),
+                "response": payload,
+            }
+        )
 
-    ok = sum(1 for item in results if item.get("status") == 200)
+    ok = sum(1 for item in results if item.get("success"))
     failed = len(results) - ok
     return {
         "peers_attempted": len(results),
@@ -134,9 +162,16 @@ def fanout_stop(timeout_s: float = 8.0) -> dict[str, Any]:
             f"http://{addr}/apis/pythonext/pytorch/profile/stop?cluster=false",
             timeout_s,
         )
-        results.append({"addr": addr, "status": status, "response": payload})
+        results.append(
+            {
+                "addr": addr,
+                "status": status,
+                "success": _peer_succeeded(status, payload),
+                "response": payload,
+            }
+        )
 
-    ok = sum(1 for item in results if item.get("status") == 200)
+    ok = sum(1 for item in results if item.get("success"))
     failed = len(results) - ok
     return {
         "peers_attempted": len(results),

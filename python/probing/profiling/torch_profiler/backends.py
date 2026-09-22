@@ -451,18 +451,24 @@ class RocmRooflineBackend(RooflineBackend):
                     "missing or uncalibrated; roofline efficiency was not computed"
                 )
             else:
+                quality = "ok" if not missing_metrics and not unassociated else "partial"
                 rooflines = _build_rocm_roofline_records(
                     counters,
                     peaks=peaks,
-                    quality="ok" if not missing_metrics and not unassociated else "partial",
+                    quality=quality,
                     capture_id=capture_id,
                     local_step=local_step,
                     global_step=global_step,
                     rank=rank,
                     role=role,
                 )
-                if not missing_metrics and not unassociated:
-                    quality = "ok"
+                if not rooflines:
+                    quality = "partial"
+                    if not error:
+                        error = (
+                            "ROCm counter rows are present but no roofline rows "
+                            "could be derived (missing duration/flops/bytes)"
+                        )
         return _RooflineCompileResult(
             counters=counters,
             rooflines=rooflines,

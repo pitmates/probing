@@ -8,6 +8,7 @@ capability probe and unit tests.
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Mapping
 
@@ -93,22 +94,27 @@ def rocm_flop_weights() -> dict[str, int]:
             continue
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             continue
-        if value < 0:
+        if not math.isfinite(float(value)) or value < 0:
             continue
         weights[name.strip()] = int(value)
     return weights
 
 
-def rocm_instruction_flops(metrics: Mapping[str, int | float]) -> int | None:
+def rocm_instruction_flops(
+    metrics: Mapping[str, int | float],
+    weights: dict[str, int] | None = None,
+) -> int | None:
     """Return calibrated FLOPs, or ``None`` when no weights are configured.
 
     v1 ships with no default weights, so ROCm roofline produces counter facts
     only until an operator supplies the calibration JSON for their device.
     """
-    weights = rocm_flop_weights()
+    if weights is None:
+        weights = rocm_flop_weights()
     if not weights:
         return None
     total = 0.0
+    matched = False
     for name, weight in weights.items():
         value = metrics.get(name)
         if value is None:
@@ -117,7 +123,8 @@ def rocm_instruction_flops(metrics: Mapping[str, int | float]) -> int | None:
             count = float(value)
         except (TypeError, ValueError):
             continue
-        if count < 0:
+        if not math.isfinite(count) or count < 0:
             continue
+        matched = True
         total += count * weight
-    return int(total)
+    return int(total) if matched else None

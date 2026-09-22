@@ -11,8 +11,8 @@ import sys
 import traceback
 from typing import Dict, List, Optional
 
+from probing.handlers.fanout import cluster_fanout_enabled
 from probing.handlers.router import ext_handler, handle_request
-from probing.profiling.torch_profiler.fanout import cluster_fanout_enabled
 
 log = logging.getLogger(__name__)
 
@@ -428,14 +428,22 @@ def start_pytorch_profile_v2(
     steps: int = 1,
     trigger: str = "http",
     analysis: Optional[str] = None,
-    cluster: bool = False,
+    cluster: Optional[str] = None,
 ) -> str:
-    """Start on-demand torch.profiler capture, optionally fanning out to peers."""
+    """Start on-demand torch.profiler capture, optionally fanning out to peers.
+
+    ``cluster`` is tri-state: omitted follows the
+    ``PROBING_TORCH_PROFILER_CLUSTER_FANOUT`` environment variable, explicit
+    ``true`` forces fan-out, and explicit ``false`` forces local-only (so peer
+    requests can never trigger recursive fan-out).
+    """
     result = json.loads(
         start_pytorch_profile(steps=steps, trigger=trigger, analysis=analysis)
     )
-    if cluster or cluster_fanout_enabled():
-        from probing.profiling.torch_profiler.fanout import fanout_start
+    if result.get("success") is not True:
+        return json.dumps(result)
+    if _resolve_cluster_fanout(cluster):
+        from probing.handlers.fanout import fanout_start
 
         result["cluster_fanout"] = fanout_start(
             steps=steps, trigger=trigger, analysis=analysis
@@ -443,16 +451,25 @@ def start_pytorch_profile_v2(
     return json.dumps(result)
 
 
+def _resolve_cluster_fanout(cluster: Optional[str]) -> bool:
+    if cluster is None:
+        return cluster_fanout_enabled()
+    return cluster.strip().lower() in {"true", "1", "yes", "on"}
+
+
 @ext_handler("pythonext", "pytorch/profile/stop")
-def stop_pytorch_profile(cluster: bool = False) -> str:
-    """Stop profiler early and materialize profile_capture / profile_hotspot rows."""
+def stop_pytorch_profile(cluster: Optional[str] = None) -> str:
+    """Stop profiler early and materialize profile_capture / profile_hotspot rows.
+
+    ``cluster`` follows the same tri-state semantics as ``profile/start``.
+    """
     try:
         from probing.profiling.torch_profiler import get_controller
 
         capture_id = get_controller().stop()
         result: dict = {"success": True, "capture_id": capture_id}
-        if cluster or cluster_fanout_enabled():
-            from probing.profiling.torch_profiler.fanout import fanout_stop
+        if _resolve_cluster_fanout(cluster):
+            from probing.handlers.fanout import fanout_stop
 
             result["cluster_fanout"] = fanout_stop()
         return json.dumps(result)

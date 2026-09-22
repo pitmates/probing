@@ -148,7 +148,7 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
 
 ## 9. 多 rank
 
-- 现有 `profile/start` 默认只作用于接收请求的进程；请求传 `cluster=true`（或设置 `PROBING_TORCH_PROFILER_CLUSTER_FANOUT=1`）后，从本地 `GET /apis/nodes` 发现 peer 并逐个触发 `profile/start?cluster=false`。
+- 现有 `profile/start` 默认只作用于接收请求的进程；`cluster` 为三态：缺省走 `PROBING_TORCH_PROFILER_CLUSTER_FANOUT`，`cluster=true` 强制 fan-out，`cluster=false` 强制本地。fan-out 时从本地 `GET /apis/nodes` 发现 peer，并逐个以 `profile/start?cluster=false` 触发，避免 peer 再次递归 fan-out。
 - 每 rank 的 `profile_capture` 保持独立，查询时通过 `cluster query` 聚合。
 - 不在 SQL 层合成一条假全局 capture。
 
