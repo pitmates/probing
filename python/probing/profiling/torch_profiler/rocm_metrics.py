@@ -70,6 +70,18 @@ def rocm_dram_bytes(metrics: Mapping[str, int | float]) -> int | None:
     return read_bytes + write_bytes
 
 
+def rocm_missing_metrics(
+    metrics: Mapping[str, int | float],
+    names: tuple[str, ...] | list[str],
+) -> list[str]:
+    """Return counter names that are absent or not coercible to a count.
+
+    Unlike a plain key-membership check, this also treats an empty or
+    non-numeric value as missing so the diagnostic list stays complete.
+    """
+    return [name for name in names if _nonnegative(metrics.get(name)) is None]
+
+
 def rocm_flop_weights() -> dict[str, int]:
     """Parse explicit instruction-to-FLOP weights from the environment.
 

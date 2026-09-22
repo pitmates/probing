@@ -8,6 +8,7 @@ from probing.profiling.torch_profiler.rocm_metrics import (
     rocm_dram_bytes,
     rocm_flop_weights,
     rocm_instruction_flops,
+    rocm_missing_metrics,
 )
 
 
@@ -83,3 +84,14 @@ def test_rocm_instruction_flops_none_when_weighted_metrics_missing(monkeypatch):
         json.dumps({"SQ_INSTS_VALU": 2}),
     )
     assert rocm_instruction_flops({"TCC_EA_RDREQ": 1}) is None
+
+
+def test_rocm_missing_metrics_includes_empty_and_non_numeric():
+    assert rocm_missing_metrics(
+        {
+            "TCC_EA_RDREQ_32B": 1,
+            "TCC_EA_RDREQ": "",
+            "TCC_EA_WRREQ": "abc",
+        },
+        ("TCC_EA_RDREQ_32B", "TCC_EA_RDREQ", "TCC_EA_WRREQ"),
+    ) == ["TCC_EA_RDREQ", "TCC_EA_WRREQ"]

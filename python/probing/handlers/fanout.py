@@ -29,7 +29,7 @@ from urllib.request import urlopen
 logger = logging.getLogger(__name__)
 
 FANOUT_ENV = "PROBING_TORCH_PROFILER_CLUSTER_FANOUT"
-_NODES_PAGE_LIMIT = 10_000
+_NODES_PAGE_LIMIT = 1024
 
 
 def cluster_fanout_enabled() -> bool:
@@ -51,11 +51,11 @@ def _env_int(name: str) -> int | None:
         return None
 
 
-def _local_nodes_url() -> str | None:
+def _local_nodes_url(offset: int = 0) -> str | None:
     port = os.environ.get("PROBING_PORT", "").strip()
     if not port:
         return None
-    return f"http://127.0.0.1:{port}/apis/nodes?offset=0&limit={_NODES_PAGE_LIMIT}"
+    return f"http://127.0.0.1:{port}/apis/nodes?offset={offset}&limit={_NODES_PAGE_LIMIT}"
 
 
 def _rank_matches(node_rank: Any, local_rank: int) -> bool:
@@ -67,25 +67,35 @@ def _rank_matches(node_rank: Any, local_rank: int) -> bool:
 
 def discover_peer_addrs(timeout_s: float = 3.0) -> list[str]:
     """Return reachable peer ``host:port`` strings, excluding this global rank."""
-    url = _local_nodes_url()
-    if url is None:
+    if _local_nodes_url() is None:
         return []
-    try:
-        with urlopen(url, timeout=timeout_s) as response:
-            document = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        logger.debug("cluster fan-out node discovery failed: %s", exc)
-        return []
-
     local_rank = _env_int("RANK")
     peers: list[str] = []
-    for node in document.get("nodes") or []:
-        addr = (node.get("addr") or "").strip()
-        if not addr:
-            continue
-        if local_rank is not None and _rank_matches(node.get("rank"), local_rank):
-            continue
-        peers.append(addr)
+    offset = 0
+    while True:
+        url = _local_nodes_url(offset=offset)
+        try:
+            with urlopen(url, timeout=timeout_s) as response:
+                document = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            logger.debug("cluster fan-out node discovery failed: %s", exc)
+            break
+
+        nodes = document.get("nodes") or []
+        for node in nodes:
+            addr = (node.get("addr") or "").strip()
+            if not addr:
+                continue
+            if local_rank is not None and _rank_matches(node.get("rank"), local_rank):
+                continue
+            peers.append(addr)
+
+        if not nodes:
+            break
+        offset += len(nodes)
+        total = document.get("total")
+        if not isinstance(total, int) or offset >= total:
+            break
     return peers
 
 

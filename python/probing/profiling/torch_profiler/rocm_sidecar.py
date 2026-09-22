@@ -65,6 +65,7 @@ from .rocm_metrics import (
     rocm_dram_bytes,
     rocm_flop_weights,
     rocm_instruction_flops,
+    rocm_missing_metrics,
 )
 from .session_store import CounterRecord
 
@@ -322,13 +323,9 @@ def build_counter_records(
         metrics = row["metrics"]
         dram_bytes = rocm_dram_bytes(metrics)
         if dram_bytes is None:
-            missing_metrics.update(
-                name for name in ROCM_DRAM_METRICS if name not in metrics
-            )
+            missing_metrics.update(rocm_missing_metrics(metrics, ROCM_DRAM_METRICS))
         if flop_weights:
-            missing_metrics.update(
-                name for name in flop_weights if name not in metrics
-            )
+            missing_metrics.update(rocm_missing_metrics(metrics, list(flop_weights)))
         op_name = row.get("op_name") or ""
         op_stack = _normalize_op_stack(row.get("op_stack"), op_name)
         top_level_op = op_stack[0] if op_stack else op_name

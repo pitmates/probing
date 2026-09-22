@@ -68,6 +68,8 @@ def test_fanout_start_requests_each_peer(monkeypatch):
 
     def fake_urlopen(url, timeout=8.0):
         calls.append((url, timeout))
+        if "/apis/nodes" in url:
+            return _response(nodes)
         return _response({"success": True})
 
     monkeypatch.setattr(
@@ -96,7 +98,7 @@ def test_fanout_start_counts_peer_json_failure(monkeypatch):
     }
 
     responses = {
-        "http://127.0.0.1:9700/apis/nodes?offset=0&limit=10000": nodes,
+        "http://127.0.0.1:9700/apis/nodes?offset=0&limit=1024": nodes,
         "http://10.0.0.2:9700/apis/pythonext/pytorch/profile/start?": {"success": False, "error": "already running"},
     }
 
@@ -114,6 +116,28 @@ def test_fanout_start_counts_peer_json_failure(monkeypatch):
     assert summary["peers_attempted"] == 1
     assert summary["peers_ok"] == 0
     assert summary["peers_failed"] == 1
+
+
+def test_discover_peer_addrs_paginates(monkeypatch):
+    monkeypatch.setenv("PROBING_PORT", "9700")
+    monkeypatch.setenv("RANK", "0")
+    pages = {
+        "http://127.0.0.1:9700/apis/nodes?offset=0&limit=1024": {
+            "nodes": [{"addr": "10.0.0.1:9700", "rank": 0}],
+            "total": 2,
+        },
+        "http://127.0.0.1:9700/apis/nodes?offset=1&limit=1024": {
+            "nodes": [{"addr": "10.0.0.2:9700", "rank": 1}],
+            "total": 2,
+        },
+    }
+
+    monkeypatch.setattr(
+        "probing.handlers.fanout.urlopen",
+        lambda url, timeout=3.0: _response(pages[url]),
+    )
+
+    assert discover_peer_addrs() == ["10.0.0.2:9700"]
 
 
 def test_fanout_start_treats_missing_success_as_failure(monkeypatch):
