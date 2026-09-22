@@ -155,17 +155,18 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
 ## 10. 实施阶段
 
 1. Phase 0（已完成）：DCU/ROCm spike，确认 Kineto 不可用，选定 `rocprofiler` sidecar。
-2. Phase 1：抽取 `RooflineBackend`，CUDA 路径回归保持不变。
-3. Phase 2：实现 `rocm` capability probe 与 metric catalog，capture 元数据落库；sidecar 采集标为 experimental。
-4. Phase 3：补齐 `rocprofiler` 调用、fan-out、输出解析与文件清理，验证真实 counter。
-5. Phase 4：单测、fixture parity、ROCm E2E 标 `slow`。
+2. Phase 1（已完成，代码）：抽取 `RooflineBackend`，CUDA 路径回归保持不变。
+3. Phase 2（已完成，代码）：实现 `rocm` capability probe 与 metric catalog，capture 元数据落库；sidecar 采集标为 experimental。
+4. Phase 3（已完成，代码）：补齐 `rocprofiler` 调用、fan-out、输出解析与文件清理；真实 counter 验证见 Phase 5。
+5. Phase 4（已完成，代码）：单测、fixture parity、ROCm E2E 标 `slow`。
+6. Phase 5（真实环境待验证）：在 `gfx936`/DCU 上跑通 sidecar 端到端输出，确定 `rocprof` 正确参数组合并回填峰值 / FLOP 权重校准值。用 `python -m probing.profiling.torch_profiler.rocm_e2e_spike` 先验证离线解析链路，再接入训练短窗口。
 
 ## 11. 测试
 
 - 单元：vendor 探测、metric 映射、单位换算、峰值解析、backend 选择。
 - Fixture：用离线 rocprofiler CSV/JSON 验证 counter 解析、算子关联和 roofline 数值。
 - 回归：确保 CUDA 路径不因后端抽象发生行为变化。
-- E2E：在真实 `gfx936`/DCU 环境验证完整链路，标 `slow`；Phase 0 未打通的 sidecar 端到端输出作为前置待办。
+- E2E：在真实 `gfx936`/DCU 环境验证完整链路，标 `slow`；先运行 `rocm_e2e_spike` 确认 `rocprof` 参数与 CSV/JSON 解析，再替换 fixture 中的离线样例。
 
 ## 12. 风险
 
