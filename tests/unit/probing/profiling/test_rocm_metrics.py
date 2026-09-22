@@ -68,6 +68,15 @@ def test_rocm_flop_weights_ignore_non_finite(monkeypatch):
     assert rocm_flop_weights() == {}
 
 
+def test_rocm_flop_weights_accept_huge_int_weight(monkeypatch):
+    huge = 10**400
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",
+        json.dumps({"SQ_INSTS_VALU": huge}),
+    )
+    assert rocm_flop_weights() == {"SQ_INSTS_VALU": huge}
+
+
 def test_rocm_instruction_flops_none_when_weighted_metrics_missing(monkeypatch):
     monkeypatch.setenv(
         "PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON",

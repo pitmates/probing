@@ -94,7 +94,12 @@ def rocm_flop_weights() -> dict[str, int]:
             continue
         if not isinstance(value, (int, float)) or isinstance(value, bool):
             continue
-        if not math.isfinite(float(value)) or value < 0:
+        if isinstance(value, int):
+            if value < 0:
+                continue
+            weights[name.strip()] = value
+            continue
+        if not math.isfinite(value) or value < 0:
             continue
         weights[name.strip()] = int(value)
     return weights
@@ -121,7 +126,7 @@ def rocm_instruction_flops(
             continue
         try:
             count = float(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
         if not math.isfinite(count) or count < 0:
             continue

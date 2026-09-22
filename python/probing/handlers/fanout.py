@@ -109,9 +109,7 @@ def _get_json(url: str, timeout_s: float) -> tuple[int | None, Any]:
 def _peer_succeeded(status: int | None, payload: Any) -> bool:
     if status != 200:
         return False
-    if isinstance(payload, dict) and payload.get("success") is False:
-        return False
-    return True
+    return isinstance(payload, dict) and payload.get("success") is True
 
 
 def fanout_start(

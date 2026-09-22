@@ -114,3 +114,28 @@ def test_fanout_start_counts_peer_json_failure(monkeypatch):
     assert summary["peers_attempted"] == 1
     assert summary["peers_ok"] == 0
     assert summary["peers_failed"] == 1
+
+
+def test_fanout_start_treats_missing_success_as_failure(monkeypatch):
+    monkeypatch.setenv("PROBING_PORT", "9700")
+    monkeypatch.setenv("RANK", "0")
+    nodes = {
+        "nodes": [
+            {"host": "h0", "addr": "10.0.0.1:9700", "rank": 0},
+            {"host": "h1", "addr": "10.0.0.2:9700", "rank": 1},
+        ]
+    }
+
+    def fake_urlopen(url, timeout=8.0):
+        if "/apis/nodes" in url:
+            return _response(nodes)
+        return _response({"error": "already running", "traceback": "..."})
+
+    monkeypatch.setattr(
+        "probing.handlers.fanout.urlopen", fake_urlopen
+    )
+
+    summary = fanout_start(steps=7, trigger="http", analysis="roofline")
+    assert summary["peers_attempted"] == 1
+    assert summary["peers_ok"] == 0
+    assert summary["peers_failed"] == 1
