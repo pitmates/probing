@@ -13,6 +13,7 @@ import os
 import tempfile
 import threading
 import time
+import uuid
 from typing import Any, Optional
 
 from .adaptor import (
@@ -264,6 +265,11 @@ class ProfilerController:
         started = self._started_at_us
         trigger = self._trigger
         steps_done = self._step_count
+        analysis = self._analysis
+        self._steps_target = 0
+        self._step_count = 0
+        self._trigger = ""
+        self._analysis = "none"
         self._running = False
         self._profiler = None
 
@@ -306,7 +312,7 @@ class ProfilerController:
                     started_at_us=started,
                     status=status,
                     error=error,
-                    analysis=self._analysis,
+                    analysis=analysis,
                     backend=self._backend,
                     raw_counter_events=(
                         (rocm_rows if rocm_rows is not None else [])
@@ -327,8 +333,26 @@ class ProfilerController:
                 )
             except Exception as exc:
                 logger.warning("failed to compile profile capture: %s", exc)
+                backend_info = self._backend.info if self._backend is not None else None
+                capture = CaptureRecord(
+                    capture_id=str(uuid.uuid4()),
+                    trigger=trigger,
+                    steps_profiled=steps_done,
+                    started_at_us=started,
+                    ended_at_us=_now_us(),
+                    status="failed",
+                    error=f"profile capture compilation failed: {exc}",
+                    analysis=analysis,
+                    counter_backend=(
+                        backend_info.counter_source if backend_info else "none"
+                    ),
+                    device_vendor=backend_info.vendor if backend_info else "",
+                    device_model=backend_info.device_model if backend_info else "",
+                    device_arch=backend_info.device_arch if backend_info else "",
+                )
+                get_session_store().add_capture(capture, [], [], [])
             try:
-                if roofline_analysis_enabled(self._analysis):
+                if roofline_analysis_enabled(analysis):
                     self._cached_timeline = _export_chrome_trace(profiler)
                     self._timeline_exported = self._cached_timeline is not None
             except Exception as exc:

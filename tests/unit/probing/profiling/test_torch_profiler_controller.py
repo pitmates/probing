@@ -10,7 +10,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from probing.profiling.torch_profiler.controller import ProfilerController
-from probing.profiling.torch_profiler.session_store import get_session_store
+from probing.profiling.torch_profiler.session_store import (
+    get_session_store,
+    reset_session_store_for_tests,
+)
 
 
 @dataclass
@@ -43,6 +46,13 @@ def _install_fake_torch(monkeypatch) -> MagicMock:
     monkeypatch.setitem(sys.modules, "torch.optim", optimizer_package)
     monkeypatch.setitem(sys.modules, "torch.optim.optimizer", optimizer_module)
     return fake_torch
+
+
+@pytest.fixture(autouse=True)
+def _clear_profile_store():
+    reset_session_store_for_tests()
+    yield
+    reset_session_store_for_tests()
 
 
 def test_start_rocm_sidecar_records_start_error(monkeypatch):
@@ -117,6 +127,53 @@ def test_finalize_materializes_sql_rows(monkeypatch):
     assert len(store.hotspots()) == 1
     assert store.captures()[0].status == "completed"
     assert ctrl.is_running is False
+
+
+def test_finalize_compilation_failure_materializes_failed_row(monkeypatch):
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.compile_from_profiler",
+        MagicMock(side_effect=ValueError("unsupported event")),
+    )
+    ctrl = ProfilerController()
+    ctrl._profiler = _mock_profiler([])
+    ctrl._running = True
+    ctrl._started_at_us = 0
+    ctrl._trigger = "unit"
+    ctrl._step_count = 1
+    ctrl._analysis = "roofline"
+
+    assert ctrl._finalize_capture(status="completed") is not None
+    capture = get_session_store().captures()[-1]
+    assert capture.status == "failed"
+    assert "unsupported event" in capture.error
+    assert len(get_session_store().hotspots()) == 0
+    assert ctrl.status() == {
+        "running": False,
+        "steps_target": 0,
+        "steps_completed": 0,
+        "trigger": "",
+        "analysis": "none",
+        "latest_capture_id": get_session_store().latest_capture_id(),
+    }
+
+
+def test_status_does_not_wait_for_finalize_lock():
+    ctrl = ProfilerController()
+    ctrl._running = False
+    ctrl._steps_target = 2
+    ctrl._step_count = 1
+    ctrl._trigger = "unit"
+    ctrl._analysis = "roofline"
+    with ctrl._lock:
+        status = ctrl.status()
+    assert status == {
+        "running": False,
+        "steps_target": 2,
+        "steps_completed": 1,
+        "trigger": "unit",
+        "analysis": "roofline",
+        "latest_capture_id": None,
+    }
 
 
 def test_finalize_is_idempotent(monkeypatch):
