@@ -143,6 +143,34 @@ class SessionStore:
                     r for r in self._rooflines if r.capture_id not in drop_ids
                 ]
 
+    def replace_capture(
+        self,
+        capture: CaptureRecord,
+        hotspots: list[HotspotRecord],
+        counters: list[CounterRecord] | None = None,
+        rooflines: list[RooflineRecord] | None = None,
+    ) -> None:
+        """Replace an existing capture (same id) with its compiled rows."""
+        with self._lock:
+            for index, existing in enumerate(self._captures):
+                if existing.capture_id != capture.capture_id:
+                    continue
+                self._captures[index] = capture
+                self._hotspots = [
+                    h for h in self._hotspots if h.capture_id != capture.capture_id
+                ]
+                self._counters = [
+                    c for c in self._counters if c.capture_id != capture.capture_id
+                ]
+                self._rooflines = [
+                    r for r in self._rooflines if r.capture_id != capture.capture_id
+                ]
+                self._hotspots.extend(hotspots)
+                self._counters.extend(counters or [])
+                self._rooflines.extend(rooflines or [])
+                return
+            self.add_capture(capture, hotspots, counters, rooflines)
+
     def captures(self) -> list[CaptureRecord]:
         with self._lock:
             return list(self._captures)

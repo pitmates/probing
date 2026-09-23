@@ -288,6 +288,45 @@ class ProfilerController:
             self._backend = None
             self._rocm_sidecar = None
 
+        capture_id = uuid.uuid4().hex
+        if backend is not None:
+            backend_info = backend.info
+            counter_backend = backend_info.counter_source
+            vendor = backend_info.vendor
+            model = backend_info.device_model
+            arch = backend_info.device_arch
+        else:
+            backend_info = None
+            counter_backend = "none"
+            vendor = ""
+            model = ""
+            arch = ""
+
+        # Publish an immediate placeholder row so /status and SQL queries never
+        # observe an empty window while the (potentially slow) sidecar collect,
+        # profiler teardown, and row compilation run below. The placeholder is
+        # replaced in place by the compiled capture once that work finishes.
+        get_session_store().add_capture(
+            CaptureRecord(
+                capture_id=capture_id,
+                trigger=trigger,
+                steps_profiled=steps_done,
+                started_at_us=started,
+                ended_at_us=_now_us(),
+                status=status,
+                error=error,
+                analysis=analysis,
+                roofline_quality="unavailable",
+                counter_backend=counter_backend,
+                device_vendor=vendor,
+                device_model=model,
+                device_arch=arch,
+            ),
+            [],
+            [],
+            [],
+        )
+
         # Compile/materialize outside the controller lock so /status and SQL
         # queries stay responsive while the (potentially slow) sidecar collect,
         # profiler teardown, and chrome-trace export run on the step thread.
@@ -305,7 +344,6 @@ class ProfilerController:
                 )
                 rocm_rows = None
 
-        capture: Optional[CaptureRecord] = None
         if profiler is not None:
             try:
                 profiler.__exit__(None, None, None)
@@ -323,6 +361,7 @@ class ProfilerController:
                     roofline_quality,
                 ) = compile_from_profiler(
                     profiler,
+                    capture_id=capture_id,
                     trigger=trigger,
                     steps_profiled=steps_done,
                     started_at_us=started,
@@ -337,7 +376,9 @@ class ProfilerController:
                         else None
                     ),
                 )
-                get_session_store().add_capture(capture, hotspots, counters, rooflines)
+                get_session_store().replace_capture(
+                    capture, hotspots, counters, rooflines
+                )
                 logger.info(
                     "profile capture %s: %d hotspots, %d counters, roofline=%s, step=%d status=%s",
                     capture.capture_id,
@@ -349,9 +390,8 @@ class ProfilerController:
                 )
             except Exception as exc:
                 logger.warning("failed to compile profile capture: %s", exc)
-                backend_info = backend.info if backend is not None else None
                 capture = CaptureRecord(
-                    capture_id=str(uuid.uuid4()),
+                    capture_id=capture_id,
                     trigger=trigger,
                     steps_profiled=steps_done,
                     started_at_us=started,
@@ -366,7 +406,7 @@ class ProfilerController:
                     device_model=backend_info.device_model if backend_info else "",
                     device_arch=backend_info.device_arch if backend_info else "",
                 )
-                get_session_store().add_capture(capture, [], [], [])
+                get_session_store().replace_capture(capture, [], [], [])
             cached_timeline: Optional[str] = None
             try:
                 if roofline_analysis_enabled(analysis):
@@ -378,7 +418,7 @@ class ProfilerController:
                 self._timeline_exported = cached_timeline is not None
         with self._lock:
             self._finalizing = False
-        return capture.capture_id if capture is not None else None
+        return capture_id
 
 
 def _export_chrome_trace(profiler: Any) -> Optional[str]:

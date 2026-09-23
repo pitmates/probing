@@ -205,6 +205,29 @@ def test_session_store_bounded(monkeypatch):
     assert all(r.capture_id != "c0" for r in store.rooflines())
 
 
+def test_session_store_replace_capture():
+    store = SessionStore(max_sessions=4)
+    store.add_capture(
+        CaptureRecord(capture_id="c0", status="completed", steps_profiled=1),
+        [HotspotRecord(capture_id="c0", bucket_name="old", self_us=1)],
+        [CounterRecord(capture_id="c0", kernel_name="old", calls=1)],
+        [RooflineRecord(capture_id="c0", kernel_name="old", calls=1)],
+    )
+
+    store.replace_capture(
+        CaptureRecord(capture_id="c0", status="failed", steps_profiled=1),
+        [HotspotRecord(capture_id="c0", bucket_name="new", self_us=2)],
+        [CounterRecord(capture_id="c0", kernel_name="new", calls=2)],
+        [RooflineRecord(capture_id="c0", kernel_name="new", calls=2)],
+    )
+
+    assert len(store.captures()) == 1
+    assert store.captures()[0].status == "failed"
+    assert [h.bucket_name for h in store.hotspots()] == ["new"]
+    assert [c.kernel_name for c in store.counters()] == ["new"]
+    assert [r.kernel_name for r in store.rooflines()] == ["new"]
+
+
 def test_compile_counter_and_roofline(stub_coords, monkeypatch):
     monkeypatch.setenv(
         "PROBING_TORCH_ROOFLINE_METRICS",
