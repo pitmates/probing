@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import sys
+import threading
 import types
 from unittest.mock import MagicMock
 
@@ -154,6 +155,7 @@ def test_finalize_compilation_failure_materializes_failed_row(monkeypatch):
         "trigger": "",
         "analysis": "none",
         "latest_capture_id": get_session_store().latest_capture_id(),
+        "finalizing": False,
     }
 
 
@@ -164,8 +166,19 @@ def test_status_does_not_wait_for_finalize_lock():
     ctrl._step_count = 1
     ctrl._trigger = "unit"
     ctrl._analysis = "roofline"
-    with ctrl._lock:
-        status = ctrl.status()
+    lock = threading.Lock()
+    release = threading.Event()
+    with lock:
+        ctrl._lock = lock
+        worker = threading.Thread(
+            target=lambda: (ctrl.status(), release.set())
+        )
+        worker.start()
+        assert release.wait(1)
+        worker.join(1)
+        assert not worker.is_alive()
+        ctrl._lock = threading.RLock()
+    status = ctrl.status()
     assert status == {
         "running": False,
         "steps_target": 2,
@@ -173,6 +186,7 @@ def test_status_does_not_wait_for_finalize_lock():
         "trigger": "unit",
         "analysis": "roofline",
         "latest_capture_id": None,
+        "finalizing": False,
     }
 
 
@@ -273,6 +287,18 @@ def test_double_start_raises(monkeypatch):
     ctrl.start(steps=1, trigger="a")
     with pytest.raises(RuntimeError, match="already running"):
         ctrl.start(steps=1, trigger="b")
+
+
+def test_start_during_finalize_raises(monkeypatch):
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.HAS_TORCH",
+        True,
+    )
+
+    ctrl = ProfilerController()
+    ctrl._finalizing = True
+    with pytest.raises(RuntimeError, match="finalizing"):
+        ctrl.start(steps=1, trigger="a")
 
 
 def test_start_failure_does_not_leave_controller_running(monkeypatch):

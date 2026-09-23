@@ -63,6 +63,7 @@ class ProfilerController:
         self._cached_timeline: Optional[str] = None
         self._timeline_exported = False
         self._running = False
+        self._finalizing = False
         self._backend: Optional[RooflineBackend] = None
         self._rocm_sidecar: Any = None
 
@@ -81,6 +82,7 @@ class ProfilerController:
                 "trigger": self._trigger,
                 "analysis": self._analysis,
                 "latest_capture_id": latest,
+                "finalizing": self._finalizing,
             }
 
     def start(
@@ -91,8 +93,8 @@ class ProfilerController:
 
         steps = max(int(steps), 1)
         with self._lock:
-            if self._running:
-                raise RuntimeError("profiler already running")
+            if self._running or self._finalizing:
+                raise RuntimeError("profiler already running or finalizing")
             self._steps_target = steps
             self._step_count = 0
             self._trigger = trigger
@@ -130,6 +132,8 @@ class ProfilerController:
 
                 def profiler_step_hook(optimizer, *args, **kwargs):
                     del optimizer, args, kwargs
+                    finalize_status: Optional[str] = None
+                    finalize_error = ""
                     with controller._lock:
                         if controller._profiler is None or not controller._running:
                             return
@@ -145,12 +149,16 @@ class ProfilerController:
                         try:
                             controller._profiler.step()
                             controller._step_count += 1
-                            if controller._step_count >= controller._steps_target:
-                                controller._finalize_capture(status="completed")
                         except RuntimeError as exc:
-                            controller._finalize_capture(
-                                status="failed", error=str(exc)
-                            )
+                            finalize_status = "failed"
+                            finalize_error = str(exc)
+                        else:
+                            if controller._step_count >= controller._steps_target:
+                                finalize_status = "completed"
+                    if finalize_status is not None:
+                        controller._finalize_capture(
+                            status=finalize_status, error=finalize_error
+                        )
 
                 self._hook_handle = register_optimizer_step_post_hook(profiler_step_hook)
                 self._running = True
@@ -165,7 +173,7 @@ class ProfilerController:
         with self._lock:
             if not self._running:
                 return get_session_store().latest_capture_id()
-            return self._finalize_capture(status="completed")
+        return self._finalize_capture(status="completed")
 
     def summary(self) -> None:
         with self._lock:
@@ -257,24 +265,32 @@ class ProfilerController:
     def _finalize_capture(
         self, *, status: str = "completed", error: str = ""
     ) -> Optional[str]:
-        if not self._running and self._profiler is None:
-            return get_session_store().latest_capture_id()
+        with self._lock:
+            if not self._running and self._profiler is None:
+                return get_session_store().latest_capture_id()
 
-        self._remove_hook()
-        profiler = self._profiler
-        started = self._started_at_us
-        trigger = self._trigger
-        steps_done = self._step_count
-        analysis = self._analysis
-        self._steps_target = 0
-        self._step_count = 0
-        self._trigger = ""
-        self._analysis = "none"
-        self._running = False
-        self._profiler = None
+            self._remove_hook()
+            profiler = self._profiler
+            started = self._started_at_us
+            trigger = self._trigger
+            steps_done = self._step_count
+            analysis = self._analysis
+            backend = self._backend
+            sidecar = self._rocm_sidecar
 
-        sidecar = self._rocm_sidecar
-        self._rocm_sidecar = None
+            self._steps_target = 0
+            self._step_count = 0
+            self._trigger = ""
+            self._analysis = "none"
+            self._running = False
+            self._finalizing = True
+            self._profiler = None
+            self._backend = None
+            self._rocm_sidecar = None
+
+        # Compile/materialize outside the controller lock so /status and SQL
+        # queries stay responsive while the (potentially slow) sidecar collect,
+        # profiler teardown, and chrome-trace export run on the step thread.
         rocm_rows: Any = None
         if sidecar is not None:
             try:
@@ -282,8 +298,8 @@ class ProfilerController:
             except Exception as exc:
                 sidecar_error = f"rocm sidecar collection failed: {exc}"
             if sidecar_error:
-                if self._backend is not None:
-                    self._backend.note_collection_error(sidecar_error)
+                if backend is not None:
+                    backend.note_collection_error(sidecar_error)
                 logger.warning(
                     "rocm roofline sidecar collect failed: %s", sidecar_error
                 )
@@ -313,11 +329,11 @@ class ProfilerController:
                     status=status,
                     error=error,
                     analysis=analysis,
-                    backend=self._backend,
+                    backend=backend,
                     raw_counter_events=(
                         (rocm_rows if rocm_rows is not None else [])
-                        if self._backend is not None
-                        and self._backend.info.counter_source == "rocm"
+                        if backend is not None
+                        and backend.info.counter_source == "rocm"
                         else None
                     ),
                 )
@@ -333,7 +349,7 @@ class ProfilerController:
                 )
             except Exception as exc:
                 logger.warning("failed to compile profile capture: %s", exc)
-                backend_info = self._backend.info if self._backend is not None else None
+                backend_info = backend.info if backend is not None else None
                 capture = CaptureRecord(
                     capture_id=str(uuid.uuid4()),
                     trigger=trigger,
@@ -351,12 +367,17 @@ class ProfilerController:
                     device_arch=backend_info.device_arch if backend_info else "",
                 )
                 get_session_store().add_capture(capture, [], [], [])
+            cached_timeline: Optional[str] = None
             try:
                 if roofline_analysis_enabled(analysis):
-                    self._cached_timeline = _export_chrome_trace(profiler)
-                    self._timeline_exported = self._cached_timeline is not None
+                    cached_timeline = _export_chrome_trace(profiler)
             except Exception as exc:
                 logger.debug("roofline parity trace export failed: %s", exc)
+            with self._lock:
+                self._cached_timeline = cached_timeline
+                self._timeline_exported = cached_timeline is not None
+        with self._lock:
+            self._finalizing = False
         return capture.capture_id if capture is not None else None
 
 
