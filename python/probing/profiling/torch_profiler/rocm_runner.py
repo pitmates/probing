@@ -1,19 +1,16 @@
 """Experimental ROCm rocprofiler sidecar session runner.
 
-Runs an operator-configured rocprofiler command for the duration of one
-capture, collects the normalized JSON/CSV artifact, and removes the temporary
-output directory. This owns the launch / collect / cleanup half of the ROCm
-roofline pipeline and is deliberately gated behind
-PROBING_TORCH_ROOFLINE_ROCM_PROFILE=1. ``ProfilerController`` starts and
-collects one session per capture window for the rocm backend.
+Runs a rocprofiler command for the duration of one capture, collects the
+normalized JSON/CSV artifact, and removes the temporary output directory. This
+owns the launch / collect / cleanup half of the ROCm roofline pipeline.
+``ProfilerController`` starts and collects one session per capture window for
+the rocm backend.
 
-Because the vendor attach/collection command has not been validated on the
-target DCU, this module never selects a rocprofiler command on its own. The
-operator must set PROBING_TORCH_ROOFLINE_ROCPROF_CMD to a shell template whose
-{output} placeholder is replaced with a per-session temp directory and whose
-{pid} placeholder is replaced with the current process id. A missing
-or failing command degrades to an explicit error string instead of fabricating
-counter rows.
+The command template lives in ``PROBING_TORCH_ROOFLINE_CONFIG`` (or the legacy
+``PROBING_TORCH_ROOFLINE_ROCPROF_CMD`` env); when neither is set a conservative
+default is used. Its ``{output}`` placeholder is replaced with a per-session
+temp directory and ``{pid}`` with the current process id. A failing command
+degrades to an explicit error string instead of fabricating counter rows.
 """
 
 from __future__ import annotations
@@ -27,20 +24,30 @@ import tempfile
 from typing import Any, Optional
 
 from .rocm_sidecar import parse_counter_artifact
+from .config import load_roofline_config
 
 _ARTIFACT_SUFFIXES = {".json", ".csv", ".jsonl"}
 _TERMINATE_TIMEOUT_S = 5.0
 
+DEFAULT_ROCM_ROCPROF_CMD = "rocprof --output {output} --basenames on --stats"
+
 
 def sidecar_enabled() -> bool:
-    return os.environ.get(
-        "PROBING_TORCH_ROOFLINE_ROCM_PROFILE", ""
-    ).strip().lower() in {"1", "true", "yes", "on"}
+    config = load_roofline_config()
+    if not config.enabled:
+        return False
+    legacy = os.environ.get("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "").strip().lower()
+    return legacy not in {"0", "false", "no", "off"}
 
 
 def sidecar_command() -> Optional[str]:
-    command = os.environ.get("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", "").strip()
-    return command or None
+    config = load_roofline_config()
+    if config.rocprof_cmd:
+        return config.rocprof_cmd
+    legacy = os.environ.get("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", "").strip()
+    if legacy:
+        return legacy
+    return DEFAULT_ROCM_ROCPROF_CMD
 
 
 class RocmSidecarSession:
@@ -60,12 +67,12 @@ class RocmSidecarSession:
             return "rocm roofline sidecar is already running"
         if not sidecar_enabled():
             return (
-                "rocm roofline sidecar is disabled; set "
-                "PROBING_TORCH_ROOFLINE_ROCM_PROFILE=1"
+                "rocm roofline sidecar is disabled; enable it via "
+                "PROBING_TORCH_ROOFLINE_CONFIG (enabled=true)"
             )
         command = sidecar_command()
         if command is None:
-            return "PROBING_TORCH_ROOFLINE_ROCPROF_CMD is not set"
+            return "rocm roofline sidecar has no rocprof command template"
         try:
             outdir = tempfile.mkdtemp(prefix="probing-rocm-artifacts-")
             rendered = command.replace("{output}", shlex.quote(outdir))

@@ -1,9 +1,9 @@
 """Vendor backends for roofline counter acquisition.
 
 The CUDA path keeps the existing in-process Kineto/CUPTI flow. The ROCm path
-adds detection/probing plus an experimental external ``rocprofiler`` sidecar,
-gated behind ``PROBING_TORCH_ROOFLINE_ROCM_PROFILE`` and
-``PROBING_TORCH_ROOFLINE_ROCPROF_CMD``.
+adds detection/probing plus an external ``rocprofiler`` sidecar. Tuning lives
+in ``PROBING_TORCH_ROOFLINE_CONFIG`` (see ``.config``); legacy per-vendor env
+variables remain as fallbacks.
 """
 
 from __future__ import annotations
@@ -16,11 +16,15 @@ from typing import Any, Optional
 
 from .rocm_metrics import ROCM_DEFAULT_METRICS
 from .rocm_runner import sidecar_command, sidecar_enabled
+from .config import load_roofline_config
 
 ROCM_PROBE_CMD_ENV = "PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD"
 
 
 def _rocm_probe_command() -> Optional[str]:
+    config = load_roofline_config()
+    if config.probe_cmd:
+        return config.probe_cmd
     return os.environ.get(ROCM_PROBE_CMD_ENV, "").strip() or None
 
 
@@ -145,7 +149,10 @@ def detect_backend(torch_module: Any) -> BackendInfo:
 
 def selected_backend(torch_module: Any) -> BackendInfo:
     detected = detect_backend(torch_module)
-    requested = os.environ.get("PROBING_TORCH_ROOFLINE_BACKEND", "auto").strip().lower()
+    config = load_roofline_config()
+    requested = config.backend
+    if requested == "auto":
+        requested = os.environ.get("PROBING_TORCH_ROOFLINE_BACKEND", "auto").strip().lower()
     if requested in {"", "auto"}:
         return detected
     if requested == "cuda" and detected.counter_source != "cuda":
@@ -172,8 +179,7 @@ class RooflineBackend(ABC):
 
     CUDA owns the Kineto/CUPTI experimental config, capability probe, and
     counter compilation. ROCm owns detection and the experimental external
-    rocprofiler sidecar path (enabled by
-    PROBING_TORCH_ROOFLINE_ROCM_PROFILE + PROBING_TORCH_ROOFLINE_ROCPROF_CMD).
+    rocprofiler sidecar path (tuned by ``PROBING_TORCH_ROOFLINE_CONFIG``).
     """
 
     def __init__(self, info: BackendInfo) -> None:
@@ -325,6 +331,9 @@ class CudaRooflineBackend(RooflineBackend):
 
 class RocmRooflineBackend(RooflineBackend):
     def metrics(self) -> tuple[str, ...]:
+        config = load_roofline_config()
+        if config.metrics:
+            return config.metrics
         raw = os.environ.get("PROBING_TORCH_ROOFLINE_ROCM_METRICS", "").strip()
         metrics = tuple(item.strip() for item in raw.split(",") if item.strip())
         if metrics:
@@ -335,19 +344,19 @@ class RocmRooflineBackend(RooflineBackend):
         del torch_module
         if not sidecar_enabled():
             self._capability_error = (
-                "rocm roofline sidecar is disabled; set "
-                "PROBING_TORCH_ROOFLINE_ROCM_PROFILE=1 to enable the experimental path"
+                "rocm roofline sidecar is disabled (PROBING_TORCH_ROOFLINE_CONFIG "
+                "enabled=false or PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0)"
             )
             return CapabilityResult(
                 backend=self.info,
                 status="unavailable",
                 error=self._capability_error,
             )
-        if not sidecar_command():
+        command = sidecar_command()
+        if not command:
             self._capability_error = (
-                "rocm roofline sidecar is enabled but "
-                "PROBING_TORCH_ROOFLINE_ROCPROF_CMD is not set; provide a shell "
-                "template with an {output} placeholder"
+                "rocm roofline sidecar is enabled but no rocprof command "
+                "template is configured"
             )
             return CapabilityResult(
                 backend=self.info,

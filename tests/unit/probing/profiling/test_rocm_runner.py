@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from probing.profiling.torch_profiler.rocm_runner import (
+    DEFAULT_ROCM_ROCPROF_CMD,
     RocmSidecarSession,
     sidecar_command,
     sidecar_enabled,
@@ -78,13 +79,10 @@ def test_start_when_disabled_returns_error(monkeypatch):
     assert "was not started" in error
 
 
-def test_start_without_command_returns_error(monkeypatch):
-    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "1")
+def test_sidecar_command_defaults_when_unset(monkeypatch):
     monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
-    assert sidecar_command() is None
-
-    session = RocmSidecarSession()
-    assert session.start() == "PROBING_TORCH_ROOFLINE_ROCPROF_CMD is not set"
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    assert sidecar_command() == DEFAULT_ROCM_ROCPROF_CMD
 
 
 def test_collect_reports_missing_artifact_files(monkeypatch, tmp_path):

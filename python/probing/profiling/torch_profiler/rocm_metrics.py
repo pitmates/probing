@@ -83,20 +83,28 @@ def rocm_missing_metrics(
 
 
 def rocm_flop_weights() -> dict[str, int]:
-    """Parse explicit instruction-to-FLOP weights from the environment.
+    """Parse explicit instruction-to-FLOP weights from config or environment.
 
-    ``PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON`` maps a ROCm instruction
+    ``PROBING_TORCH_ROOFLINE_CONFIG.flop_weights`` maps a ROCm instruction
     counter name to FLOPs per instruction, for example
-    ``{"SQ_INSTS_VALU": 2, "SQ_INSTS_SALU": 1}``. When the variable is unset
-    or invalid the result is empty and no FLOPs are fabricated.
+    ``{"SQ_INSTS_VALU": 2, "SQ_INSTS_SALU": 1}``. The legacy
+    ``PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON`` env is the fallback.
+    When neither is set or invalid the result is empty and no FLOPs are
+    fabricated.
     """
-    raw = os.environ.get(ROCM_FLOP_WEIGHTS_ENV, "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
+    from .config import load_roofline_config
+
+    config = load_roofline_config()
+    if config.flop_weights is not None:
+        parsed = config.flop_weights
+    else:
+        raw = os.environ.get(ROCM_FLOP_WEIGHTS_ENV, "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
     if not isinstance(parsed, dict):
         return {}
 

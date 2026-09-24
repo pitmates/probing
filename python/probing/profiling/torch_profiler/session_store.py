@@ -225,14 +225,23 @@ def roofline_peaks(
     backend: str | None = None,
     device_arch: str | None = None,
 ) -> tuple[float | None, float | None]:
-    if backend == "rocm":
-        raw = os.environ.get("PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON", "").strip()
+    from .config import load_roofline_config
+
+    config = load_roofline_config()
+    if config.peaks is not None:
+        parsed = config.peaks
     else:
-        raw = os.environ.get("PROBING_TORCH_ROOFLINE_PEAKS_JSON", "").strip()
-    if not raw:
-        return None, None
+        if backend == "rocm":
+            raw = os.environ.get("PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON", "").strip()
+        else:
+            raw = os.environ.get("PROBING_TORCH_ROOFLINE_PEAKS_JSON", "").strip()
+        if not raw:
+            return None, None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = None
     try:
-        parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             raise ValueError("peaks JSON must be an object")
         if backend is not None and parsed.get("backend") not in {None, backend}:

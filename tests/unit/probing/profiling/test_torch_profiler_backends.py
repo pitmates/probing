@@ -55,21 +55,19 @@ def test_detect_rocm_reads_gcn_arch():
 
 
 def test_rocm_probe_disabled_is_unavailable(monkeypatch):
-    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", raising=False)
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "0")
     info = BackendInfo("amd", "BW", "gfx936", "rocm")
     result = RocmRooflineBackend(info).probe(_fake_torch(hip="6.3.26093"))
     assert result.status == "unavailable"
     assert "disabled" in result.error
 
 
-def test_rocm_probe_enabled_without_command_is_unavailable(monkeypatch):
-    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "1")
+def test_rocm_probe_without_command_uses_default(monkeypatch):
     monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
     info = BackendInfo("amd", "BW", "gfx936", "rocm")
     result = RocmRooflineBackend(info).probe(_fake_torch(hip="6.3.26093"))
-    assert result.status == "unavailable"
-    assert "ROCPROF_CMD" in result.error
-    assert "{output}" in result.error
+    assert result.status == "ok"
+    assert result.error == ""
 
 
 def test_rocm_probe_enabled_with_command_is_ok(monkeypatch):

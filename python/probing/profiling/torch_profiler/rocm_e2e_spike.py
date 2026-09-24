@@ -7,16 +7,13 @@ and exercises the production code path end to end:
     -> parse_counter_artifact() -> build_counter_records()
     -> RocmRooflineBackend.compile_counter_rows()
 
-The operator must supply a working rocprofiler command via
-``PROBING_TORCH_ROOFLINE_ROCPROF_CMD`` (a shell template with ``{output}`` and
-``{pid}`` placeholders), for example::
+The operator may override the default ``rocprof`` command template via
+``PROBING_TORCH_ROOFLINE_CONFIG`` (see ``config.py``), for example::
 
     rocprof --output {output} --basenames on --stats
 
-Run::
+Run (zero-config works; tune only when needed)::
 
-    PROBING_TORCH_ROOFLINE_ROCM_PROFILE=1 \
-    PROBING_TORCH_ROOFLINE_ROCPROF_CMD='rocprof --output {output} --basenames on --stats' \
     python -m probing.profiling.torch_profiler.rocm_e2e_spike --workload all --output /tmp/rocm_e2e.json
 
 Use ``--list-counters`` to check whether the required metric names exist in
@@ -120,10 +117,10 @@ def run_capture(
     }
 
     if not sidecar_enabled():
-        report["error"] = "PROBING_TORCH_ROOFLINE_ROCM_PROFILE must be set to 1"
+        report["error"] = "rocm roofline sidecar is disabled"
         return report
     if not sidecar_command():
-        report["error"] = "PROBING_TORCH_ROOFLINE_ROCPROF_CMD is not set"
+        report["error"] = "rocm roofline sidecar has no rocprof command template"
         return report
 
     device = "cuda"

@@ -135,14 +135,15 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
 
 - 新增 capture 元数据列：`counter_backend`、`device_vendor`、`device_model`、`device_arch`。
 - 表 `python.profile_counter` / `python.profile_roofline` 的结构保持稳定。
-- 新增 env：
+- 新增 env（推荐只用一个 `PROBING_TORCH_ROOFLINE_CONFIG`，以下旧版变量保留为 fallback）：
+  - `PROBING_TORCH_ROOFLINE_CONFIG`：内联 JSON 或文件路径，聚合 `backend` / `enabled` / `rocprof_cmd` / `probe_cmd` / `metrics` / `peaks` / `flop_weights`
   - `PROBING_TORCH_ROOFLINE_BACKEND=auto|cuda|rocm`
   - `PROBING_TORCH_ROOFLINE_ROCM_METRICS`
   - `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON`
   - `PROBING_TORCH_ROOFLINE_ROCPROF_CMD`
   - `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD`（可选 dry-run 能力探测）
   - `PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON`（显式指令→FLOP 校准）
-  - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（experimental sidecar 开关）
+  - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（experimental sidecar 开关；新版默认开启）
   - `PROBING_TORCH_PROFILER_CLUSTER_FANOUT=0|1`（`profile/start` 按 rank fan-out）
 - 同步更新 `env-vars`、`sql-tables`、`semantic_catalog` 和 `operator_roofline` skill。
 

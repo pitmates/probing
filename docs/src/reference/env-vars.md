@@ -141,6 +141,7 @@ Non-PROBING-prefixed aliases are also recognized for Megatron compatibility:
 |----------|---------|-------------|
 | `PROBING_TORCH_PROFILING` | — | Set to `on` to activate PyTorch module hooks and write `python.torch_trace`. Default when enabled: **5% step sampling** (`rate=0.05`), full-snapshot (`layer_rate=1.0`), **shadow cadence 4:1** (`shadow=4:1` — one baseline step per four probed steps for in-run overhead in `python.torch_step_timing`). Spec is `rate[:layer_rate]` (`layer_rate` = per-layer hit probability on a sampled step); a leading `random:`/`ordered:` token is accepted for back-compat (always `random`). Override with e.g. `1.0`, `0.05:0.1`, `shadow=8:2`, or `shadow=off`. **Backward** timing (`backward=on`) times each module's backward via output/input grad hooks; off by default. |
 | `PROBING_TORCH_PROFILER_ANALYSIS` | `none` | Default analysis features for on-demand `torch.profiler` captures. Set to `roofline` to enable CUPTI counters for `python.profile_counter` / `python.profile_roofline`; the per-capture `analysis=roofline` request parameter takes precedence. |
+| `PROBING_TORCH_ROOFLINE_CONFIG` | 鈥?| Consolidated roofline tuning config: inline JSON or a path to a JSON file. Keys: `backend` (`auto`/`cuda`/`rocm`), `enabled`, `rocprof_cmd`, `probe_cmd`, `metrics`, `peaks`, `flop_weights`. Prefer this over the legacy per-vendor env vars below. |
 | `PROBING_TORCH_ROOFLINE_METRICS` | HTA set | Comma-separated CUPTI metric override for roofline captures. |
 | `PROBING_TORCH_ROOFLINE_BACKEND` | `auto` | Roofline counter backend: `auto`, `cuda`, or `rocm`. |
 | `PROBING_TORCH_ROOFLINE_ROCM_METRICS` | — | Comma-separated ROCm counter override for experimental ROCm captures. |
@@ -149,7 +150,7 @@ Non-PROBING-prefixed aliases are also recognized for Megatron compatibility:
 | `PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON` | — | Explicit ROCm instruction-to-FLOP calibration, e.g. `{"SQ_INSTS_VALU": 2}`; unset keeps `flops` NULL. |
 | `PROBING_TORCH_PROFILER_CLUSTER_FANOUT` | `0` | Default fan-out for `pytorch/profile/start` / `stop`; request `cluster=true` forces fan-out and `cluster=false` forces local-only. |
 | `PROBING_TORCH_ROOFLINE_ROCPROF_CMD` | — | Shell template for the experimental ROCm sidecar; `{output}` is replaced with the per-session artifact directory and `{pid}` with the training process id. |
-| `PROBING_TORCH_ROOFLINE_ROCM_PROFILE` | `0` | Enable the experimental ROCm sidecar collector. |
+| `PROBING_TORCH_ROOFLINE_ROCM_PROFILE` | on | Legacy force-disable flag for the ROCm sidecar; set to `0`/`false` to disable. |
 | `PROBING_TORCH_ROOFLINE_BALANCED_THRESHOLD` | `0.9` | Roofline balanced-classification threshold. |
 | `PROBING_TORCH_ROOFLINE_PEAKS_JSON` | — | Explicit `fp16_tensor_dense` peak values: `{"fp16_tensor_dense":{"peak_flops":312e12,"peak_bytes_per_sec":1.6e12}}`. |
 | `PROBING_TORCH_ROOFLINE_MAX_EVENTS` | `200000` | Roofline raw-event cap; exceeding it marks results `data_quality="truncated"`. |
