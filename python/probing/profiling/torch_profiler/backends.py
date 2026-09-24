@@ -1,7 +1,8 @@
 """Vendor backends for roofline counter acquisition.
 
 The CUDA path keeps the existing in-process Kineto/CUPTI flow. The ROCm path
-adds detection/probing, launcher wrapper rendering, and offline artifact import. Tuning lives
+adds detection/probing, launcher wrapper rendering, and offline artifact import.
+Tuning lives
 in ``PROBING_TORCH_ROOFLINE_CONFIG`` (see ``.config``); legacy per-vendor env
 variables remain as fallbacks.
 """
@@ -345,7 +346,7 @@ class RocmRooflineBackend(RooflineBackend):
         if not sidecar_enabled():
             self._capability_error = (
                 "rocm roofline wrapper collection is disabled (PROBING_TORCH_ROOFLINE_CONFIG "
-                "enabled=false or PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0)"
+                "rocm_enabled=false or PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0)"
             )
             return CapabilityResult(
                 backend=self.info,

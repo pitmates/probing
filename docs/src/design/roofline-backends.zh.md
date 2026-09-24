@@ -155,13 +155,13 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
                      python.profile_roofline
 ```
 
-### 5.5 offline import 契约（v1，Phase 3 目标）
+### 5.5 offline import 契约（v1，Phase 3 已实现）
 
 - 触发入口：`profile/start?analysis=roofline&artifact_dir=…` 标记窗口；finalize（自动或 `profile/stop`）时扫描 artifact 目录并 import。`artifact_dir` 缺省取 `PROBING_TORCH_ROOFLINE_ARTIFACT_DIR`，再回退 `rocprof_cmd` 的 `{output}`。
 - 发现 / 命名：`{artifact_dir}/rank{rank}/{launch_ts}/*`；`capture_id` 在 offline import 时才生成并与窗口关联，文件名不预取 `capture_id`。import 默认取该 rank 最新 `launch_ts` 子目录，或由 artifact 目录内唯一子目录 / 环境变量显式指定；真实后缀与时间戳列名以 Phase 5 的 rocprof 输出为准。
 - 回收：import 成功后删除临时 artifact；`PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS=1` 保留现场。
 - v1 不新增 `profile_capture.artifact_path` 列，artifact 位置由目录约定承载；确需跨进程 / 延迟 import 时再补列与 CLI/HTTP 契约。
-- 以上为 Phase 3 目标契约，当前代码未实现；HTTP 表面变化须同步 `probing/server/API.md` 与 `tests/regression/spec/api_spec.json`。
+- HTTP 表面变化已同步 `probing/server/API.md`；`tests/regression/spec/api_spec.json` 不记录查询参数，无需为 `artifact_dir` 增列。
 
 ## 6. Metric 映射草案
 
@@ -205,7 +205,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
   - `PROBING_TORCH_ROOFLINE_BACKEND=auto|cuda|rocm`
   - `PROBING_TORCH_ROOFLINE_ROCM_METRICS`
   - `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON`
-  - `PROBING_TORCH_ROOFLINE_ROCPROF_CMD`（当前实现为 sidecar 模板，仅支持 `{output}`/`{pid}`；Phase 3 起改为 wrapper 模板，占位符 `{pmc}`/`{output}`/`{app}` 且默认含 `--timestamp on`，属 breaking 变更）
+  - `PROBING_TORCH_ROOFLINE_ROCPROF_CMD`（wrapper 模板，占位符 `{pmc}`/`{output}`/`{app}`，默认含 `--timestamp on`；已由 sidecar 模板 `{output}`/`{pid}` breaking 变更而来）
   - `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD`（wrapper probe：验证最小 kernel 能否产出 counter，不再做 attach 式 dry-run 探测）
   - `PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON`（显式指令→FLOP 校准）
   - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（wrapper 采集开关；旧名 sidecar 保留兼容，新版默认开启）
@@ -224,8 +224,8 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 1. Phase 0（已完成）：DCU/ROCm spike，确认 Kineto 不可用，并确认 DTK `rocprof`/`rocprofv2` 只支持 wrap-launch、无 `--pid` attach，据此选定“全程采集 + 离线统计”。
 2. Phase 1（已完成，代码）：抽取 `RooflineBackend`，CUDA 路径回归保持不变。
 3. Phase 2（已完成，代码）：实现 `rocm` capability probe 与 metric catalog、`PROBING_TORCH_ROOFLINE_CONFIG` 配置收敛；capture 元数据落库。
-4. Phase 3（待改）：把 v1 采集从“窗口内 sidecar”改为 wrapper：生成含 `{pmc}`/`{output}`/`{app}` 且默认 `--timestamp on` 的 `rocprof_wrap_cmd`；实现 offline import（artifact → `profile_counter` → 进程内 `join_rocm_rows_with_timeline` → `profile_roofline`）与临时 artifact 生命周期。
-5. Phase 4（待做）：离线 fixture/单测/dry-run；`rocm_e2e_spike` 验证 CSV/JSON 解析与 wrapper 命令模板（不实际采集）。
+4. Phase 3（已完成，代码）：v1 采集已从“窗口内 sidecar”改为 wrapper：`wrap_command()` 渲染含 `{pmc}`/`{output}`/`{app}` 且默认 `--timestamp on` 的命令；`import_artifact_rows()` 实现 offline import（artifact → `profile_counter` → 进程内 `join_rocm_rows_with_timeline` → `profile_roofline`）与临时 artifact 回收。
+5. Phase 4（已完成，代码）：离线 fixture/单测/dry-run；`rocm_e2e_spike` 验证 CSV/JSON 解析与 wrapper 命令模板（不实际采集）。本机无 `_core`，pytest 未运行，待真实环境执行。
 6. Phase 5（真实 DCU 待验证，单卡）：单卡小 bench 跑通 `rocprof -i pmc.txt --timestamp on -d out <app>` 端到端 counter，确认 metric 名 / 时间戳列 / artifact 后缀，回填峰值 / FLOP 权重。
 7. Phase 5b（多卡注入层级，v1 主路径专项）：验证“包整个 `torchrun`”与“launcher 逐 rank 包 worker”的 counter 归属与落盘，确定 rank → artifact 子目录映射；这是单卡阶段验证不了的独立专项。
 8. 后续（暂不实施）：方法 2 进程内 ROCProfiler/HSA 原生采集，恢复“训练中按需 start/stop”；保留 `RooflineBackend` 采集策略替换点。
