@@ -1,7 +1,7 @@
 """Vendor backends for roofline counter acquisition.
 
 The CUDA path keeps the existing in-process Kineto/CUPTI flow. The ROCm path
-adds detection/probing plus an external ``rocprofiler`` sidecar. Tuning lives
+adds detection/probing, launcher wrapper rendering, and offline artifact import. Tuning lives
 in ``PROBING_TORCH_ROOFLINE_CONFIG`` (see ``.config``); legacy per-vendor env
 variables remain as fallbacks.
 """
@@ -178,8 +178,8 @@ class RooflineBackend(ABC):
     """Vendor-specific roofline backend.
 
     CUDA owns the Kineto/CUPTI experimental config, capability probe, and
-    counter compilation. ROCm owns detection and the experimental external
-    rocprofiler sidecar path (tuned by ``PROBING_TORCH_ROOFLINE_CONFIG``).
+    counter compilation. ROCm owns detection, launcher wrapper rendering, and offline artifact
+    import (tuned by ``PROBING_TORCH_ROOFLINE_CONFIG``).
     """
 
     def __init__(self, info: BackendInfo) -> None:
@@ -203,7 +203,7 @@ class RooflineBackend(ABC):
         return self.probe(torch_module)
 
     def note_collection_error(self, message: str) -> None:
-        """Record a runtime sidecar failure surfaced when the capture compiles."""
+        """Record a runtime collection failure surfaced when the capture compiles."""
         if message and not self._runtime_error:
             self._runtime_error = message
 
@@ -344,7 +344,7 @@ class RocmRooflineBackend(RooflineBackend):
         del torch_module
         if not sidecar_enabled():
             self._capability_error = (
-                "rocm roofline sidecar is disabled (PROBING_TORCH_ROOFLINE_CONFIG "
+                "rocm roofline wrapper collection is disabled (PROBING_TORCH_ROOFLINE_CONFIG "
                 "enabled=false or PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0)"
             )
             return CapabilityResult(
@@ -355,7 +355,7 @@ class RocmRooflineBackend(RooflineBackend):
         command = sidecar_command()
         if not command:
             self._capability_error = (
-                "rocm roofline sidecar is enabled but no rocprof command "
+                "rocm roofline wrapper collection is enabled but no rocprof command "
                 "template is configured"
             )
             return CapabilityResult(
@@ -425,7 +425,7 @@ class RocmRooflineBackend(RooflineBackend):
                 associated_kernels=0,
                 unassociated_kernels=0,
                 missing_metrics=[],
-                error=f"rocm sidecar artifact parse failed: {exc}",
+                error=f"rocm artifact parse failed: {exc}",
             )
         if not rows:
             return _RooflineCompileResult(
@@ -436,7 +436,7 @@ class RocmRooflineBackend(RooflineBackend):
                 associated_kernels=0,
                 unassociated_kernels=0,
                 missing_metrics=[],
-                error="rocm sidecar artifact contained no counter rows",
+                error="rocm artifact contained no counter rows",
             )
         rows = join_rocm_rows_with_timeline(rows, timeline_events or [])
         counters, missing_metrics = build_counter_records(

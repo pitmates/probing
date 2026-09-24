@@ -1,9 +1,9 @@
 """Slow ROCm roofline E2E (opt-in).
 
 Runs only when an operator sets ``PROBING_TORCH_ROOFLINE_ROCM_E2E=1`` on a real
-DCU/ROCm node and supplies the experimental sidecar command template. The test
-exercises the real ``rocprofiler`` launch/collect/parse link without requiring
-the full training control loop.
+DCU/ROCm node and has already produced whole-run counter artifacts with the
+launcher wrapper. This validates the offline import + compile link without the
+full training control loop.
 """
 
 from __future__ import annotations
@@ -21,24 +21,24 @@ pytestmark = [
 ]
 
 
-def test_rocm_sidecar_produces_counter_facts() -> None:
+def test_rocm_wrapper_imports_counter_facts() -> None:
     from probing.profiling.torch_profiler.backends import (
         BackendInfo,
         RocmRooflineBackend,
     )
     from probing.profiling.torch_profiler.rocm_runner import (
-        RocmSidecarSession,
+        import_artifact_rows,
         sidecar_command,
         sidecar_enabled,
     )
 
-    assert sidecar_enabled(), "rocm roofline sidecar must be enabled"
-    assert sidecar_command(), "rocm rocprof command template must be available"
+    assert sidecar_enabled(), "rocm roofline wrapper collection must be enabled"
+    assert sidecar_command(), "rocm rocprof wrapper command template must be available"
 
-    session = RocmSidecarSession()
-    assert session.start() == "", session.start()
+    artifact_dir = os.getenv("PROBING_TORCH_ROOFLINE_ARTIFACT_DIR", "")
+    assert artifact_dir, "PROBING_TORCH_ROOFLINE_ARTIFACT_DIR must point at rocprof artifacts"
 
-    rows, error = session.collect(timeout_s=float(os.getenv("PROBING_TORCH_ROOFLINE_ROCM_E2E_TIMEOUT", "60")))
+    rows, error = import_artifact_rows(artifact_dir, rank=0)
     assert error == "", error
     assert rows, "rocprofiler produced no counter rows"
 

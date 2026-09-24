@@ -65,7 +65,7 @@ class ProfilerController:
         self._running = False
         self._finalizing = False
         self._backend: Optional[RooflineBackend] = None
-        self._rocm_sidecar: Any = None
+        self._artifact_dir: str = ""
 
     @property
     def is_running(self) -> bool:
@@ -86,7 +86,12 @@ class ProfilerController:
             }
 
     def start(
-        self, *, steps: int = 1, trigger: str = "manual", analysis: str | None = None
+        self,
+        *,
+        steps: int = 1,
+        trigger: str = "manual",
+        analysis: str | None = None,
+        artifact_dir: Optional[str] = None,
     ) -> None:
         if not HAS_TORCH:
             raise ImportError("PyTorch is not installed")
@@ -103,6 +108,7 @@ class ProfilerController:
             self._cached_timeline = None
             self._timeline_exported = False
             self._backend = None
+            self._artifact_dir = (artifact_dir or "").strip()
 
             activities = [torch.profiler.ProfilerActivity.CPU]
             if torch.cuda.is_available():
@@ -121,8 +127,6 @@ class ProfilerController:
                 self._backend = backend
                 if capability.status == "ok":
                     profile_kwargs = backend.build_profiler_kwargs(profile_kwargs, torch)
-                    if backend.info.counter_source == "rocm":
-                        self._start_rocm_sidecar(backend)
             try:
                 self._profiler = torch.profiler.profile(**profile_kwargs)
 
@@ -165,7 +169,7 @@ class ProfilerController:
             except Exception:
                 self._profiler = None
                 self._hook_handle = None
-                self._discard_rocm_sidecar()
+                self._artifact_dir = ""
                 raise
 
     def stop(self) -> Optional[str]:
@@ -239,28 +243,15 @@ class ProfilerController:
             logger.debug("failed to remove optimizer hook: %s", exc)
         self._hook_handle = None
 
-    def _start_rocm_sidecar(self, backend: RooflineBackend) -> None:
-        from .rocm_runner import RocmSidecarSession
+    def _current_rank(self) -> int:
+        from probing.tracing import step
+        from probing.tracing.coordinates import row_fields
 
-        session = RocmSidecarSession()
-        start_error = session.start()
-        if start_error:
-            backend.note_collection_error(start_error)
-            logger.warning("rocm roofline sidecar start failed: %s", start_error)
-            self._rocm_sidecar = None
-            return
-        self._rocm_sidecar = session
-        logger.info("rocm roofline sidecar started")
-
-    def _discard_rocm_sidecar(self) -> None:
-        sidecar = self._rocm_sidecar
-        self._rocm_sidecar = None
-        if sidecar is None:
-            return
         try:
-            sidecar.cleanup()
-        except Exception as exc:
-            logger.debug("rocm roofline sidecar cleanup failed: %s", exc)
+            coords = row_fields(step.snapshot())
+            return int(coords.get("rank", -1))
+        except Exception:
+            return -1
 
     def _finalize_capture(
         self, *, status: str = "completed", error: str = ""
@@ -276,7 +267,7 @@ class ProfilerController:
             steps_done = self._step_count
             analysis = self._analysis
             backend = self._backend
-            sidecar = self._rocm_sidecar
+            artifact_dir = self._artifact_dir
 
             self._steps_target = 0
             self._step_count = 0
@@ -286,7 +277,7 @@ class ProfilerController:
             self._finalizing = True
             self._profiler = None
             self._backend = None
-            self._rocm_sidecar = None
+            self._artifact_dir = ""
 
         capture_id = uuid.uuid4().hex
         if backend is not None:
@@ -303,7 +294,7 @@ class ProfilerController:
             arch = ""
 
         # Publish an immediate placeholder row so /status and SQL queries never
-        # observe an empty window while the (potentially slow) sidecar collect,
+        # observe an empty window while the (potentially slow) artifact import,
         # profiler teardown, and row compilation run below. The placeholder is
         # replaced in place by the compiled capture once that work finishes.
         get_session_store().add_capture(
@@ -328,19 +319,23 @@ class ProfilerController:
         )
 
         # Compile/materialize outside the controller lock so /status and SQL
-        # queries stay responsive while the (potentially slow) sidecar collect,
+        # queries stay responsive while the (potentially slow) artifact import,
         # profiler teardown, and chrome-trace export run on the step thread.
         rocm_rows: Any = None
-        if sidecar is not None:
+        if backend is not None and backend.info.counter_source == "rocm":
+            from . import rocm_runner
+
             try:
-                rocm_rows, sidecar_error = sidecar.collect()
+                rocm_rows, import_error = rocm_runner.import_artifact_rows(
+                    artifact_dir or rocm_runner.artifact_root(),
+                    self._current_rank(),
+                )
             except Exception as exc:
-                sidecar_error = f"rocm sidecar collection failed: {exc}"
-            if sidecar_error:
-                if backend is not None:
-                    backend.note_collection_error(sidecar_error)
+                import_error = f"rocm artifact import failed: {exc}"
+            if import_error:
+                backend.note_collection_error(import_error)
                 logger.warning(
-                    "rocm roofline sidecar collect failed: %s", sidecar_error
+                    "rocm roofline artifact import failed: %s", import_error
                 )
                 rocm_rows = None
 

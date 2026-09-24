@@ -126,6 +126,7 @@ def fanout_start(
     steps: int,
     trigger: str,
     analysis: str | None,
+    artifact_dir: str | None = None,
     timeout_s: float = 8.0,
 ) -> dict[str, Any]:
     peers = discover_peer_addrs()
@@ -136,6 +137,7 @@ def fanout_start(
                 "steps": steps,
                 "trigger": trigger,
                 "analysis": analysis or "",
+                "artifact_dir": artifact_dir or "",
                 "cluster": "false",
             }
         )

@@ -2,7 +2,7 @@
 
 This module is the in-process contract half: it validates and normalizes
 counter artifacts into python.profile_counter fact rows. Artifact production
-(the experimental rocprofiler sidecar and its temp-file lifecycle) lives in
+(the launcher wrapper and its artifact lifecycle) lives in
 ``rocm_runner.py``; this module does not launch rocprofiler, manage
 subprocesses, clean up files, or perform cluster fan-out.
 

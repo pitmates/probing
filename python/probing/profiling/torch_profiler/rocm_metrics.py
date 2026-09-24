@@ -1,7 +1,7 @@
 """Pure ROCm counter-name and byte-conversion helpers.
 
 The conversion formulas are draft and are intentionally isolated here so the
-eventual ``rocprofiler`` sidecar parser can use the same definitions as the
+offline ``rocprofiler`` artifact parser can use the same definitions as the
 capability probe and unit tests.
 """
 

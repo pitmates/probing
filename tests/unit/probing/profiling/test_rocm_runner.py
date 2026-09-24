@@ -1,20 +1,22 @@
-"""Unit tests for the experimental ROCm rocprofiler sidecar session runner."""
+"""Unit tests for ROCm wrapper rendering and offline artifact import."""
 
 from __future__ import annotations
 
 import json
 import shlex
-import sys
 from pathlib import Path
 
 from probing.profiling.torch_profiler.rocm_runner import (
     DEFAULT_ROCM_ROCPROF_CMD,
-    RocmSidecarSession,
+    artifact_root,
+    import_artifact_rows,
+    keep_artifacts,
     sidecar_command,
     sidecar_enabled,
+    wrap_command,
 )
 
-DOC = {
+_DOC = {
     "format": "probing-rocm-sidecar-v1",
     "counters": [
         {
@@ -31,52 +33,11 @@ DOC = {
 }
 
 
-def _fake_script(tmp_path, marker=None, outcome="ok"):
-    lines = ["import json, sys", "out = sys.argv[1]"]
-    if marker is not None:
-        lines.append("open(" + repr(str(marker)) + ", 'w').write(out)")
-    if outcome == "ok":
-        lines.append("doc = " + json.dumps(DOC, separators=(",", ":")))
-        lines.append("open(out + '/artifact.json', 'w').write(json.dumps(doc))")
-    elif outcome == "exit-1":
-        lines.append("sys.exit(1)")
-    script = tmp_path / "fake_rocprof.py"
-    script.write_text("\n".join(lines) + "\n")
-    return script
-
-
-def _configure(monkeypatch, script):
-    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "1")
-    monkeypatch.setenv(
-        "PROBING_TORCH_ROOFLINE_ROCPROF_CMD",
-        "{} {} {{output}}".format(shlex.quote(sys.executable), shlex.quote(str(script))),
-    )
-
-
-def test_start_collect_parses_artifact_and_cleans_up(monkeypatch, tmp_path):
-    marker = tmp_path / "outdir.txt"
-    _configure(monkeypatch, _fake_script(tmp_path, marker=marker))
-    session = RocmSidecarSession()
-
-    assert session.start() == ""
-    assert session.active
-
-    rows, error = session.collect(timeout_s=10)
-    assert error == ""
-    assert [row["kernel_name"] for row in rows] == ["gemm_kernel"]
-    assert not session.active
-    assert not Path(marker.read_text()).exists()
-
-
-def test_start_when_disabled_returns_error(monkeypatch):
-    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "0")
-    assert sidecar_enabled() is False
-
-    session = RocmSidecarSession()
-    assert "disabled" in session.start()
-    rows, error = session.collect()
-    assert rows == []
-    assert "was not started" in error
+def _write_artifact(root: Path, name: str = "artifact.json") -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / name
+    path.write_text(json.dumps(_DOC), encoding="utf-8")
+    return path
 
 
 def test_sidecar_command_defaults_when_unset(monkeypatch):
@@ -85,21 +46,79 @@ def test_sidecar_command_defaults_when_unset(monkeypatch):
     assert sidecar_command() == DEFAULT_ROCM_ROCPROF_CMD
 
 
-def test_collect_reports_missing_artifact_files(monkeypatch, tmp_path):
-    _configure(monkeypatch, _fake_script(tmp_path, outcome="no-files"))
-    session = RocmSidecarSession()
-    assert session.start() == ""
+def test_sidecar_enabled_respects_legacy_env(monkeypatch):
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "0")
+    assert sidecar_enabled() is False
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "1")
+    assert sidecar_enabled() is True
 
-    rows, error = session.collect(timeout_s=10)
+
+def test_wrap_command_quotes_replacements(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCPROF_CMD",
+        "python {app} -o {output} -i {pmc}",
+    )
+    rendered = wrap_command(
+        pmc="/tmp/a b.txt",
+        output="/tmp/o dir",
+        app="bench.py --steps 2",
+    )
+    assert shlex.split(rendered) == [
+        "python",
+        "bench.py",
+        "--steps",
+        "2",
+        "-o",
+        "/tmp/o dir",
+        "-i",
+        "/tmp/a b.txt",
+    ]
+
+
+def test_wrap_command_leaves_unsupplied_placeholders(monkeypatch):
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    rendered = wrap_command(pmc="pmc.txt")
+    assert rendered is not None
+    assert "pmc.txt" in rendered
+    assert "{output}" in rendered
+    assert "{app}" in rendered
+
+
+def test_import_artifact_rows_parses_and_cleanups(tmp_path):
+    launch = tmp_path / "rank0" / "launch-1"
+    _write_artifact(launch)
+
+    rows, error = import_artifact_rows(str(tmp_path), rank=0)
+    assert error == ""
+    assert [row["kernel_name"] for row in rows] == ["gemm_kernel"]
+    assert not launch.exists()
+    assert (tmp_path / "rank0").exists()
+
+
+def test_import_artifact_rows_keeps_when_requested(tmp_path):
+    launch = tmp_path / "rank0" / "launch-1"
+    path = _write_artifact(launch)
+
+    rows, error = import_artifact_rows(str(tmp_path), rank=0, keep=True)
+    assert error == ""
+    assert rows
+    assert path.exists()
+
+
+def test_import_artifact_rows_reports_missing_directory(tmp_path):
+    rows, error = import_artifact_rows(str(tmp_path), rank=0)
     assert rows == []
-    assert "no JSON/CSV counter artifacts" in error
+    assert "no rocm counter artifact directory" in error
 
 
-def test_collect_reports_command_failure(monkeypatch, tmp_path):
-    _configure(monkeypatch, _fake_script(tmp_path, outcome="exit-1"))
-    session = RocmSidecarSession()
-    assert session.start() == ""
+def test_artifact_root_prefers_env(monkeypatch):
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ARTIFACT_DIR", "/artifacts")
+    assert artifact_root() == "/artifacts"
 
-    rows, error = session.collect(timeout_s=10)
-    assert rows == []
-    assert "exited with 1" in error
+
+def test_keep_artifacts_env(monkeypatch):
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS", "1")
+    assert keep_artifacts() is True
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS", "0")
+    assert keep_artifacts() is False

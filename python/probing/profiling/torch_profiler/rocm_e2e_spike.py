@@ -1,20 +1,20 @@
-"""Real-DCU validation spike for the ROCm roofline sidecar path.
+"""Real-DCU validation spike for the ROCm whole-run roofline path.
 
-This is not a unit test; it runs on a ROCm/DCU node with ``probing`` installed
-and exercises the production code path end to end:
+This is not a unit test; it runs on a ROCm/DCU node with ``probing`` installed.
 
-    RocmSidecarSession.start() -> run microbenchmark kernels -> collect()
-    -> parse_counter_artifact() -> build_counter_records()
-    -> RocmRooflineBackend.compile_counter_rows()
+Two validation steps are supported:
 
-The operator may override the default ``rocprof`` command template via
-``PROBING_TORCH_ROOFLINE_CONFIG`` (see ``config.py``), for example::
+1. Render the launch wrapper (helps the operator run the training command
+   under ``rocprof``)::
 
-    rocprof --output {output} --basenames on --stats
+       python -m probing.profiling.torch_profiler.rocm_e2e_spike --wrap-cmd \
+           --pmc /path/to/pmc.txt --out-dir /path/to/artifacts/rank0 \
+           --app "python bench_train.py"
 
-Run (zero-config works; tune only when needed)::
+2. Import offline counter artifacts and compile roofline rows::
 
-    python -m probing.profiling.torch_profiler.rocm_e2e_spike --workload all --output /tmp/rocm_e2e.json
+       python -m probing.profiling.torch_profiler.rocm_e2e_spike \
+           --artifact-dir /path/to/artifacts --rank 0
 
 Use ``--list-counters`` to check whether the required metric names exist in
 ``rocprofv2 --list-counters`` before attempting a capture.
@@ -24,10 +24,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import subprocess
 import sys
-import time
 from dataclasses import asdict
 from typing import Any
 
@@ -47,6 +45,14 @@ def _detect() -> tuple[dict[str, Any], Any]:
 
     info = detect_backend(torch)
     return asdict(info), torch
+
+
+def _backend() -> tuple[Any, Any, dict[str, Any]]:
+    from probing.profiling.torch_profiler.backends import BackendInfo, RocmRooflineBackend
+
+    info_dict, torch_module = _detect()
+    backend = RocmRooflineBackend(BackendInfo(**info_dict))
+    return backend, torch_module, info_dict
 
 
 def list_counters(list_cmd: str) -> dict[str, Any]:
@@ -72,81 +78,44 @@ def list_counters(list_cmd: str) -> dict[str, Any]:
     }
 
 
-def _run_workload(name: str, device: str, dtype: Any) -> None:
-    import torch
-
-    if name in {"gemm", "all"}:
-        a = torch.randn(4096, 4096, device=device, dtype=dtype)
-        b = torch.randn(4096, 4096, device=device, dtype=dtype)
-        torch.matmul(a, b)
-    if name in {"elementwise", "all"}:
-        x = torch.randn(1 << 22, device=device, dtype=dtype)
-        _ = x * 2.0
-    torch.cuda.synchronize()
-
-
-def run_capture(
-    workload: str,
-    timeout_s: float,
-    warmup_s: float,
-) -> dict[str, Any]:
-    import torch
-
-    from probing.profiling.torch_profiler.backends import (
-        BackendInfo,
-        RocmRooflineBackend,
-    )
+def render_wrap_cmd(pmc: str, out_dir: str, app: str) -> dict[str, Any]:
     from probing.profiling.torch_profiler.rocm_runner import (
-        RocmSidecarSession,
+        artifact_root,
         sidecar_command,
         sidecar_enabled,
+        wrap_command,
     )
-
-    info_dict, torch_module = _detect()
-    backend_info = BackendInfo(
-        vendor=info_dict["vendor"],
-        device_model=info_dict["device_model"],
-        device_arch=info_dict["device_arch"],
-        counter_source=info_dict["counter_source"],
-    )
-    backend = RocmRooflineBackend(backend_info)
-    capability = backend.probe(torch_module)
 
     report: dict[str, Any] = {
+        "enabled": sidecar_enabled(),
+        "template": sidecar_command(),
+        "artifact_root_default": artifact_root(),
+    }
+    rendered = wrap_command(pmc=pmc or None, output=out_dir or None, app=app or None)
+    if rendered is None:
+        report["error"] = "no rocprof wrapper command template configured"
+    else:
+        report["wrap_command"] = rendered
+    return report
+
+
+def run_import(artifact_dir: str, rank: int) -> dict[str, Any]:
+    from probing.profiling.torch_profiler.rocm_runner import import_artifact_rows
+
+    backend, torch_module, info_dict = _backend()
+    capability = backend.probe(torch_module)
+    report: dict[str, Any] = {
         "backend": info_dict,
-        "capability": asdict(capability) if hasattr(capability, "status") else None,
-        "workload": workload,
+        "capability": asdict(capability),
+        "artifact_dir": artifact_dir,
+        "rank": rank,
     }
 
-    if not sidecar_enabled():
-        report["error"] = "rocm roofline sidecar is disabled"
-        return report
-    if not sidecar_command():
-        report["error"] = "rocm roofline sidecar has no rocprof command template"
-        return report
-
-    device = "cuda"
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-    session = RocmSidecarSession()
-    start_error = session.start()
-    report["sidecar_start_error"] = start_error
-    if start_error:
-        return report
-
-    try:
-        if warmup_s > 0:
-            time.sleep(warmup_s)
-        _run_workload(workload, device, dtype)
-        rows, collect_error = session.collect(timeout_s=timeout_s)
-    finally:
-        if session.active:
-            session.cleanup()
-
-    report["collect_error"] = collect_error
+    rows, import_error = import_artifact_rows(artifact_dir, rank)
+    report["import_error"] = import_error
     report["parsed_rows"] = len(rows)
     report["first_rows"] = rows[:5]
-
-    if collect_error:
+    if import_error:
         return report
 
     result = backend.compile_counter_rows(
@@ -154,7 +123,7 @@ def run_capture(
         capture_id="rocm-e2e-spike",
         local_step=0,
         global_step=0,
-        rank=0,
+        rank=rank,
         role="",
     )
     report["compile"] = {
@@ -182,16 +151,31 @@ def main(argv: list[str] | None = None) -> int:
         default="rocprofv2 --list-counters",
         help="shell command for --list-counters (default: rocprofv2 --list-counters)",
     )
-    parser.add_argument("--workload", default="all", choices=["gemm", "elementwise", "all"])
+    parser.add_argument(
+        "--wrap-cmd",
+        action="store_true",
+        help="render the rocprof wrapper command and exit",
+    )
+    parser.add_argument("--pmc", default="", help="metrics file for --wrap-cmd")
+    parser.add_argument("--out-dir", default="", help="output directory for --wrap-cmd")
+    parser.add_argument("--app", default="", help="wrapped application for --wrap-cmd")
+    parser.add_argument(
+        "--artifact-dir",
+        default="",
+        help="import counter artifacts from this directory root",
+    )
+    parser.add_argument("--rank", type=int, default=0, help="rank subdirectory to import")
     parser.add_argument("--output", default="", help="write JSON report to this path")
-    parser.add_argument("--timeout", type=float, default=60.0)
-    parser.add_argument("--warmup", type=float, default=2.0)
     args = parser.parse_args(argv)
 
     if args.list_counters:
         report = list_counters(args.list_cmd)
+    elif args.wrap_cmd:
+        report = render_wrap_cmd(args.pmc, args.out_dir, args.app)
+    elif args.artifact_dir:
+        report = run_import(args.artifact_dir, args.rank)
     else:
-        report = run_capture(args.workload, args.timeout, args.warmup)
+        parser.error("one of --list-counters, --wrap-cmd, or --artifact-dir is required")
 
     payload = json.dumps(report, ensure_ascii=False, indent=2, default=str)
     if args.output:

@@ -63,3 +63,22 @@ def test_nan_and_infinity_weights_are_dropped(monkeypatch):
     )
     config = load_roofline_config()
     assert config.flop_weights == {"A": 2}
+
+
+def test_artifact_dir_and_keep_artifacts_from_config(monkeypatch):
+    monkeypatch.setenv(
+        CONFIG_ENV,
+        json.dumps({"artifact_dir": "/my/artifacts", "keep_artifacts": True}),
+    )
+    config = load_roofline_config()
+    assert config.artifact_dir == "/my/artifacts"
+    assert config.keep_artifacts is True
+
+
+def test_artifact_dir_env_fallback(monkeypatch):
+    monkeypatch.delenv(CONFIG_ENV, raising=False)
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ARTIFACT_DIR", "/env/artifacts")
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS", "1")
+    config = load_roofline_config()
+    assert config.artifact_dir == "/env/artifacts"
+    assert config.keep_artifacts is True

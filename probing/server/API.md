@@ -76,7 +76,7 @@ All handlers live in `python/probing/handlers/pythonext.py`, one canonical local
 | GET | `/apis/pythonext/trace/chrome-tracing` | `trace/chrome-tracing` |
 | GET | `/apis/pythonext/pytorch/timeline` | `pytorch/timeline` |
 | GET | `/apis/pythonext/pytorch/profile` | `pytorch/profile` — start profiler (legacy alias of `profile/start`; prefer `/start`) |
-| GET | `/apis/pythonext/pytorch/profile/start` | `pytorch/profile/start` — `steps`, `trigger`, `analysis` (`none` default; `roofline`), `cluster` (omitted follows `PROBING_TORCH_PROFILER_CLUSTER_FANOUT`; `true` fans out; `false` forces local-only) (canonical; Web clients use this) |
+| GET | `/apis/pythonext/pytorch/profile/start` | `pytorch/profile/start` — `steps`, `trigger`, `analysis` (`none` default; `roofline`), `artifact_dir` (ROCm roofline artifact directory; defaults to `PROBING_TORCH_ROOFLINE_ARTIFACT_DIR`), `cluster` (omitted follows `PROBING_TORCH_PROFILER_CLUSTER_FANOUT`; `true` fans out; `false` forces local-only) (canonical; Web clients use this) |
 | GET | `/apis/pythonext/pytorch/profile/stop` | `pytorch/profile/stop` — finalize capture (`cluster` tri-state like `profile/start`) |
 | GET | `/apis/pythonext/pytorch/profile/status` | `pytorch/profile/status` |
 | GET | `/apis/pythonext/pytorch/runtime-debug?include_values=` | `pytorch/runtime-debug` — local wait counters + read-only job TCPStore snapshot |

@@ -56,47 +56,39 @@ def _clear_profile_store():
     reset_session_store_for_tests()
 
 
-def test_start_rocm_sidecar_records_start_error(monkeypatch):
+def test_current_rank_from_step_snapshot(monkeypatch):
+    from probing.tracing import coordinates
+    from probing.tracing import step as step_module
+
+    monkeypatch.setattr(step_module, "snapshot", lambda: {"rank": 3})
+    monkeypatch.setattr(coordinates, "row_fields", lambda snapshot: snapshot)
+    assert ProfilerController()._current_rank() == 3
+
+
+def test_finalize_rocm_imports_artifact(monkeypatch):
     from probing.profiling.torch_profiler import rocm_runner
 
-    fake_session = MagicMock()
-    fake_session.start.return_value = "exploded"
-    monkeypatch.setattr(
-        rocm_runner, "RocmSidecarSession", lambda: fake_session
-    )
     backend = MagicMock()
-    ctrl = ProfilerController()
-    ctrl._start_rocm_sidecar(backend)
-
-    backend.note_collection_error.assert_called_once_with("exploded")
-    assert ctrl._rocm_sidecar is None
-
-
-def test_start_rocm_sidecar_stores_session_on_success(monkeypatch):
-    from probing.profiling.torch_profiler import rocm_runner
-
-    fake_session = MagicMock()
-    fake_session.start.return_value = ""
+    backend.info.counter_source = "rocm"
+    monkeypatch.setattr(rocm_runner, "artifact_root", lambda: "/artifacts")
     monkeypatch.setattr(
-        rocm_runner, "RocmSidecarSession", lambda: fake_session
+        rocm_runner, "import_artifact_rows", lambda root, rank: ([], "no artifacts")
     )
-    backend = MagicMock()
+    monkeypatch.setattr(
+        "probing.profiling.torch_profiler.controller.compile_from_profiler",
+        MagicMock(side_effect=ValueError("stub compilation")),
+    )
+
     ctrl = ProfilerController()
-    ctrl._start_rocm_sidecar(backend)
+    ctrl._profiler = _mock_profiler([])
+    ctrl._running = True
+    ctrl._started_at_us = 0
+    ctrl._trigger = "unit"
+    ctrl._step_count = 1
+    ctrl._backend = backend
 
-    backend.note_collection_error.assert_not_called()
-    assert ctrl._rocm_sidecar is fake_session
-
-
-def test_discard_rocm_sidecar_cleans_up():
-    fake_session = MagicMock()
-    ctrl = ProfilerController()
-    ctrl._rocm_sidecar = fake_session
-
-    ctrl._discard_rocm_sidecar()
-
-    fake_session.cleanup.assert_called_once()
-    assert ctrl._rocm_sidecar is None
+    assert ctrl._finalize_capture(status="completed") is not None
+    backend.note_collection_error.assert_called_once_with("no artifacts")
 
 
 def test_finalize_materializes_sql_rows(monkeypatch):

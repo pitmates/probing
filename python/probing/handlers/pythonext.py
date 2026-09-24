@@ -401,14 +401,19 @@ def get_pytorch_timeline() -> str:
 
 @ext_handler("pythonext", "pytorch/profile")
 def start_pytorch_profile(
-    steps: int = 1, trigger: str = "http", analysis: Optional[str] = None
+    steps: int = 1,
+    trigger: str = "http",
+    analysis: Optional[str] = None,
+    artifact_dir: Optional[str] = None,
 ) -> str:
     """Start PyTorch global profiler (legacy path)."""
     try:
         from probing.profiling.torch_profiler import get_controller
 
         controller = get_controller()
-        controller.start(steps=steps, trigger=trigger, analysis=analysis)
+        controller.start(
+            steps=steps, trigger=trigger, analysis=analysis, artifact_dir=artifact_dir
+        )
         return json.dumps(
             {
                 "success": True,
@@ -429,6 +434,7 @@ def start_pytorch_profile_v2(
     trigger: str = "http",
     analysis: Optional[str] = None,
     cluster: Optional[str] = None,
+    artifact_dir: Optional[str] = None,
 ) -> str:
     """Start on-demand torch.profiler capture, optionally fanning out to peers.
 
@@ -438,7 +444,9 @@ def start_pytorch_profile_v2(
     requests can never trigger recursive fan-out).
     """
     result = json.loads(
-        start_pytorch_profile(steps=steps, trigger=trigger, analysis=analysis)
+        start_pytorch_profile(
+            steps=steps, trigger=trigger, analysis=analysis, artifact_dir=artifact_dir
+        )
     )
     if result.get("success") is not True:
         return json.dumps(result)
@@ -446,7 +454,10 @@ def start_pytorch_profile_v2(
         from probing.handlers.fanout import fanout_start
 
         result["cluster_fanout"] = fanout_start(
-            steps=steps, trigger=trigger, analysis=analysis
+            steps=steps,
+            trigger=trigger,
+            analysis=analysis,
+            artifact_dir=artifact_dir,
         )
     return json.dumps(result)
 

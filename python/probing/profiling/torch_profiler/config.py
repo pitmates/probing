@@ -8,8 +8,10 @@ path to a JSON file::
     {
       "backend": "rocm",
       "rocm_enabled": true,
-      "rocprof_cmd": "rocprof --output {output} --basenames on --stats",
+      "rocprof_cmd": "rocprof -i {pmc} --timestamp on -d {output} {app}",
       "probe_cmd": "rocprofv2 --list-counters",
+      "artifact_dir": "/root/private_data/zlp/tmp/probing/data_dcu",
+      "keep_artifacts": false,
       "metrics": ["TCC_EA_RDREQ_32B", "TCC_EA_RDREQ", "TCC_EA_WRREQ_64B", "TCC_EA_WRREQ"],
       "peaks": {"backend": "rocm", "device_arch": "gfx936",
                 "peaks": {"fp16_tensor_dense": {"peak_flops": 312e12, "peak_bytes_per_sec": 1.6e12}}},
@@ -30,6 +32,8 @@ from typing import Any
 
 
 CONFIG_ENV = "PROBING_TORCH_ROOFLINE_CONFIG"
+ARTIFACT_DIR_ENV = "PROBING_TORCH_ROOFLINE_ARTIFACT_DIR"
+KEEP_ARTIFACTS_ENV = "PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS"
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,8 @@ class RooflineConfig:
     metrics: tuple[str, ...] = ()
     peaks: dict[str, Any] | None = None
     flop_weights: dict[str, int] | None = None
+    artifact_dir: str = ""
+    keep_artifacts: bool = False
 
 
 def _parse_metrics(value: Any) -> tuple[str, ...]:
@@ -117,6 +123,19 @@ def load_roofline_config() -> RooflineConfig:
         probe_cmd = ""
     probe_cmd = probe_cmd.strip()
 
+    artifact_dir = raw.get("artifact_dir", "")
+    if not isinstance(artifact_dir, str):
+        artifact_dir = ""
+    artifact_dir = artifact_dir.strip() or os.environ.get(ARTIFACT_DIR_ENV, "").strip()
+
+    keep_artifacts = raw.get("keep_artifacts") is True
+    keep_artifacts = keep_artifacts or os.environ.get(KEEP_ARTIFACTS_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
     peaks = raw.get("peaks") if isinstance(raw.get("peaks"), dict) else None
     flop_weights = _parse_weights(raw.get("flop_weights"))
 
@@ -128,4 +147,6 @@ def load_roofline_config() -> RooflineConfig:
         metrics=_parse_metrics(raw.get("metrics")),
         peaks=peaks,
         flop_weights=flop_weights,
+        artifact_dir=artifact_dir,
+        keep_artifacts=keep_artifacts,
     )
