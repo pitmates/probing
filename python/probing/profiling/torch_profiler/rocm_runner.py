@@ -68,7 +68,7 @@ class RocmSidecarSession:
         if not sidecar_enabled():
             return (
                 "rocm roofline sidecar is disabled; enable it via "
-                "PROBING_TORCH_ROOFLINE_CONFIG (enabled=true)"
+                "PROBING_TORCH_ROOFLINE_CONFIG (rocm_enabled=true)"
             )
         command = sidecar_command()
         if command is None:
