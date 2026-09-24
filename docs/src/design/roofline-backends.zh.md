@@ -108,6 +108,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 - `{pmc}` 为仅含 DRAM 四计数器与 `SQ_INSTS_*` 的 metric 文件；launcher 渲染时令 `{output}={artifact_dir}/rank{rank}/{launch_ts}`，与 offline import 的发现规则一致。`--timestamp on` 保留 device/steady 时间戳供关联与切片。
 - v1 先单卡单进程验证 `rocprof -i pmc.txt --timestamp on -d out python bench.py`；多卡 `torchrun` 注入层级（包整个 `torchrun`，或 launcher 逐 rank 包 worker）是 v1 主路径专项，见 Phase 5b。
 - 模板渲染必须走参数列表或 `shlex.quote`，禁止把 `{pmc}`/`{output}`/`{app}` 直接字符串拼接；路径或训练命令可能含空格/引号。
+- 单命令启动入口：新增 `probing-roofline`（或 `python -m probing.profiling.torch_profiler.rocm_wrap`）——内部按 `ROCM_DEFAULT_METRICS` 生成默认 `pmc`、按 `{artifact_dir}/rank{rank}/{launch_ts}` 拼好 `-d`，并自动置 `PROBING_TORCH_PROFILER_ANALYSIS=roofline`；用户只需把训练命令放在 `--` 之后。`--dry-run` 只打印渲染结果不执行。
 
 **统计期（offline import）**
 
@@ -212,6 +213,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
   - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（wrapper 采集开关；旧名 sidecar 保留兼容，新版默认开启）
   - `PROBING_TORCH_ROOFLINE_ARTIFACT_DIR` / `PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS` / `PROBING_TORCH_ROOFLINE_FINALIZED`（offline import 目录 / 保留现场 / 采集完成门控）
   - `PROBING_TORCH_PROFILER_CLUSTER_FANOUT=0|1`（`profile/start` 按 rank fan-out）
+- 新增 CLI：`probing-roofline` console script（`python -m probing.profiling.torch_profiler.rocm_wrap` 亦可），参数仅 `--rank` / `--launch-ts` / `--pmc` / `--dry-run`，训练命令放在 `--` 之后；`--pmc` 缺省自动生成。
 - 同步更新 `env-vars`、`sql-tables`、`semantic_catalog` 和 `operator_roofline` skill。
 
 ## 9. 多 rank
