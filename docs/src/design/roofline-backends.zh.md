@@ -82,21 +82,86 @@ device_arch     = ...
 
 ## 5. ROCm/DCU 适配路径
 
-Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、1500 MHz）无法通过 PyTorch/Kineto 进程内路径取得 roofline counter。Kineto 只提供 kernel 时间线，不暴露 `cuda_profiler_range` / `hip_profiler_range`，也没有 metric args。因此 v1 采用 `rocprofiler` sidecar；进程内路径只保留诊断记录，不用于 counter 采集。
+Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、1500 MHz）无法通过 PyTorch/Kineto 进程内路径取得 roofline counter。Kineto 只提供 kernel 时间线，不暴露 `cuda_profiler_range` / `hip_profiler_range`，也没有 metric args。因此 v1 采用 `rocprofiler` 采集；进程内路径只保留诊断记录，不用于 counter 计数。
+
+关键约束（DTK 26.04 验证）：`/opt/dtk-26.04/rocprofiler/bin/rocprof` 与 `rocprofv2` 都是 wrap-launch 采集器——命令形态为 `rocprof[v2] -i <pmc> -d <out> <app>`，采集器自己拉起被测程序，不支持 `--pid` / `--target-process` attach 到已运行训练进程。因此“训练运行中按需 start/stop 的捕获窗口”在 rocprof 工具链上不可直接实现，v1 改为“启动时全程采集 + 事后离线统计”。
 
 ### 5.1 进程内 Kineto 路径（已验证，不可用）
 
 - PyTorch 2.9.0 / ROCm 6.3.26093 会接受 `_ExperimentalConfig` 指标，但 `profiler.events()` 中无 counter 事件，metric keys 为空。
 - Chrome trace 可见 `kernel`、`cuda_runtime`、`gpu_memset`，但没有 `cuda_profiler_range` 或 `hip_profiler_range`。
-- 结论：v1 不再投资该路径；能力探测固定写入 `counter_backend=rocm`，sidecar 未就绪时返回 `unavailable`。
+- 结论：v1 不再投资该路径；能力探测固定写入 `counter_backend=rocm`，wrapper 采集链路未就绪时返回 `unavailable`。
 
-### 5.2 离线 `rocprofiler` sidecar 路径（v1 主路径）
+### 5.2 全程采集 + 离线统计（v1 主路径）
 
-- 工具链：`/opt/dtk-26.04/rocprofiler/bin/rocprof`、`rocprofv2`；metric 定义在 `lib/rocprofiler/metrics.xml` 与 `gfx_metrics.xml`。
-- L2 collector 在捕获窗口内启动 `rocprofiler`，按 rank 独立采集，输出 CSV/JSON 后按 `capture_id`、时间戳或 `correlation_id` 与 Kineto timeline join。
-- 优点：metric 完整，兼容性更可控。
-- 缺点：多进程生命周期、fan-out 和文件清理更复杂。
-- 当前风险：`rocprofv2 --plugin file` 尚未产出端到端 counter 文件；旧 `rocprof` 已进入 metric 分组，但首次验证因 `Context Create failed` 中止。实现时 sidecar 必须标为 experimental，并保留 `unavailable` 降级。
+v1 采用两段式模型，采集与统计解耦。
+
+**采集期（训练启动时包裹）**
+
+- 由 launcher / probing 将采集命令套在训练进程外层，覆盖整个训练生命周期；每个 rank 产出独立 counter artifact（CSV/JSON）。
+- 基准命令形态：
+
+```text
+rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
+```
+
+- `{pmc}` 为仅含 DRAM 四计数器与 `SQ_INSTS_*` 的 metric 文件；launcher 渲染时令 `{output}={artifact_dir}/rank{rank}/{launch_ts}`，与 offline import 的发现规则一致。`--timestamp on` 保留 device/steady 时间戳供关联与切片。
+- v1 先单卡单进程验证 `rocprof -i pmc.txt --timestamp on -d out python bench.py`；多卡 `torchrun` 注入层级（包整个 `torchrun`，或 launcher 逐 rank 包 worker）是 v1 主路径专项，见 Phase 5b。
+- 模板渲染必须走参数列表或 `shlex.quote`，禁止把 `{pmc}`/`{output}`/`{app}` 直接字符串拼接；路径或训练命令可能含空格/引号。
+
+**统计期（offline import）**
+
+- probing 进程内 collector 用 `rocm_sidecar.parse_counter_artifact()` 解析 artifact，产出 `python.profile_counter` 事实行，`flops` 保持 `NULL`。
+- 再在进程内用 `join_rocm_rows_with_timeline()` 把 counter 行与当次 capture 的 Kineto `profiler.events()`（`timeline_events`）关联：优先 `correlation_id`，缺失时按时间戳回退，得到 `op_stack`。
+- 随后用 `rocm_metrics` 换算 DRAM bytes（`TCC_EA_*`）与 FLOPs（`SQ_INSTS_*`，未校准为 `NULL`），写 `python.profile_roofline`。
+- 职责边界：`parse_counter_artifact()` 只做 artifact 规范化；kernel→op 关联由 collector 内的 `join_rocm_rows_with_timeline()` 完成，落库后不再二次 SQL JOIN。`python.torch_trace` 是 TorchProbe 的模块级采样表，不是 Kineto kernel timeline，不参与本关联。
+
+**step 切片**
+
+- 全程采集不等于整段都必须进 roofline，但 v1 的窗口边界用 `profile_capture.started_at_us/ended_at_us` 近似，不按 step 切。
+- per-step 区间归并后置：`TorchStepTiming` 只有 `step_duration_sec`，没有 step 起止 wall-clock，当前无法按 step 切片；要支持需先补“step 起止时间戳”依赖，列为后续项。
+- 长训练分区：v1 先只做单卡短 bench，允许整段 artifact；命名 `{artifact_dir}/rank{rank}/{launch_ts}/*`，rotation / 大小上限 / 断点续跑留到多卡与长训练专项。
+
+### 5.3 `profile/start` 语义（v1 降级）
+
+- CUDA：维持 `profile/start?steps=N` 进程内按需 start/stop。
+- ROCm v1：counter 由全程 wrapper 采集；`profile/start` 仍开短窗口 `torch.profiler`（Kineto），只取 CPU op timeline 与 `external_id` 供关联，不从 Kineto 取 counter，随后触发 offline import/finalize。artifact 未产出/不可达时不伪造 counter，`roofline_quality=unavailable` 并在 `profile_capture.error` 附原因。
+- 方法 2（进程内 ROCProfiler/HSA 原生采集，依赖 `librocprofiler` C API 与 `_core` 编译）作为恢复“训练中按需 start/stop”的后路，v1 不实施，但保留 `RooflineBackend` 的采集策略替换点。
+
+返回语义（当前实现已按此口径，Phase 3 沿用）：`profile/status` 的 `running` / `steps_target` / `steps_completed` / `finalizing` 仅对应进程内 Kineto 短窗口；`capture.status` 表示该 timeline 窗口是否成功，`roofline_quality` 独立表示 counter 质量，两者不混用。
+
+| 场景 | `profile/start` | `capture.status` | `roofline_quality` | `profile_roofline` | `capture_id` |
+| --- | --- | --- | --- | --- | --- |
+| artifact 就绪且已校准 | `success=true` | `completed` | `ok`（无 `missing_metrics` / `unassociated`） | 有值 | 有值 |
+| artifact 就绪但未校准（`flops` 全 `NULL`） | `success=true` | `completed` | `partial` | 空 | 有值 |
+| artifact 缺失 / 解析失败 | `success=true` | `completed`（`error` 附原因） | `unavailable` | 空 | 有值 |
+| start 阶段失败（窗口未建立） | `success=false` | 无 capture 行 | — | — | 空 |
+| 窗口已建、finalize / `__exit__` 失败 | `success=true` | `failed` | `unavailable`（按失败点） | 空 | 有值 |
+
+### 5.4 数据流
+
+```text
+训练启动 / launcher
+   rocprof -i {pmc} --timestamp on -d {artifact_dir}/rank{rank}/{launch_ts} <train_cmd>
+        └─ 全程采集 ─▶ {artifact_dir}/rank{rank}/{launch_ts}/*.csv|json （counter artifact）
+                              │
+                              ▼  rocm_sidecar.parse_counter_artifact()
+                     python.profile_counter          （kernel / op / op_stack / calls / duration / metrics，flops=NULL）
+                              │
+                              ▼  进程内 join_rocm_rows_with_timeline(correlation_id → 时间戳回退)
+                     当次 Kineto profile events        （CPU op stack 来源）
+                              │
+                              ▼  rocm_metrics 换算（DRAM bytes + FLOPs）
+                     python.profile_roofline
+```
+
+### 5.5 offline import 契约（v1，Phase 3 目标）
+
+- 触发入口：`profile/start?analysis=roofline&artifact_dir=…` 标记窗口；finalize（自动或 `profile/stop`）时扫描 artifact 目录并 import。`artifact_dir` 缺省取 `PROBING_TORCH_ROOFLINE_ARTIFACT_DIR`，再回退 `rocprof_cmd` 的 `{output}`。
+- 发现 / 命名：`{artifact_dir}/rank{rank}/{launch_ts}/*`；`capture_id` 在 offline import 时才生成并与窗口关联，文件名不预取 `capture_id`。import 默认取该 rank 最新 `launch_ts` 子目录，或由 artifact 目录内唯一子目录 / 环境变量显式指定；真实后缀与时间戳列名以 Phase 5 的 rocprof 输出为准。
+- 回收：import 成功后删除临时 artifact；`PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS=1` 保留现场。
+- v1 不新增 `profile_capture.artifact_path` 列，artifact 位置由目录约定承载；确需跨进程 / 延迟 import 时再补列与 CLI/HTTP 契约。
+- 以上为 Phase 3 目标契约，当前代码未实现；HTTP 表面变化须同步 `probing/server/API.md` 与 `tests/regression/spec/api_spec.json`。
 
 ## 6. Metric 映射草案
 
@@ -108,7 +173,7 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
   - `TCC_EA_WRREQ_64B`、`TCC_EA_WRREQ`
   - 公式草案：`read_bytes = 32 * RDREQ_32B + 64 * (RDREQ - RDREQ_32B)`，write 同理。
 - Kernel 时长：优先取 `DurationNs` / `KernelDuration`；缺失时不得用 CPU 时间冒充 device 时长。
-- 算子关联：优先 `correlation_id`，缺失时按时间戳回退到最近 launch，不采用“最后一个 CPU op”或虚假关联计数。
+- 算子关联：`correlation_id` 来自 Kineto 短窗口的 CPU op `external_id`；rocprof 原生 artifact 通常不带它，回退到「kernel 名 + 时间戳最近 launch」，不采用“最后一个 CPU op”或虚假关联计数。
 - 禁止把 NVIDIA SASS 指标名直接映射到 ROCm，也禁止用估算 FLOPs 标记为 `ok`。
 
 ## 7. 峰值配置
@@ -140,10 +205,10 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
   - `PROBING_TORCH_ROOFLINE_BACKEND=auto|cuda|rocm`
   - `PROBING_TORCH_ROOFLINE_ROCM_METRICS`
   - `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON`
-  - `PROBING_TORCH_ROOFLINE_ROCPROF_CMD`
-  - `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD`（可选 dry-run 能力探测）
+  - `PROBING_TORCH_ROOFLINE_ROCPROF_CMD`（当前实现为 sidecar 模板，仅支持 `{output}`/`{pid}`；Phase 3 起改为 wrapper 模板，占位符 `{pmc}`/`{output}`/`{app}` 且默认含 `--timestamp on`，属 breaking 变更）
+  - `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD`（wrapper probe：验证最小 kernel 能否产出 counter，不再做 attach 式 dry-run 探测）
   - `PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON`（显式指令→FLOP 校准）
-  - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（experimental sidecar 开关；新版默认开启）
+  - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（wrapper 采集开关；旧名 sidecar 保留兼容，新版默认开启）
   - `PROBING_TORCH_PROFILER_CLUSTER_FANOUT=0|1`（`profile/start` 按 rank fan-out）
 - 同步更新 `env-vars`、`sql-tables`、`semantic_catalog` 和 `operator_roofline` skill。
 
@@ -152,15 +217,18 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
 - 现有 `profile/start` 默认只作用于接收请求的进程；`cluster` 为三态：缺省走 `PROBING_TORCH_PROFILER_CLUSTER_FANOUT`，`cluster=true` 强制 fan-out，`cluster=false` 强制本地。fan-out 时从本地 `GET /apis/nodes` 发现 peer，并逐个以 `profile/start?cluster=false` 触发，避免 peer 再次递归 fan-out。
 - 每 rank 的 `profile_capture` 保持独立，查询时通过 `cluster query` 聚合。
 - 不在 SQL 层合成一条假全局 capture。
+- ROCm v1：训练期 counter 由 launcher 在启动时采集；`profile/start` fan-out 只触发各 rank 的 offline import/finalize，artifact 逐 rank 解析、逐 rank 落库。
 
 ## 10. 实施阶段
 
-1. Phase 0（已完成）：DCU/ROCm spike，确认 Kineto 不可用，选定 `rocprofiler` sidecar。
+1. Phase 0（已完成）：DCU/ROCm spike，确认 Kineto 不可用，并确认 DTK `rocprof`/`rocprofv2` 只支持 wrap-launch、无 `--pid` attach，据此选定“全程采集 + 离线统计”。
 2. Phase 1（已完成，代码）：抽取 `RooflineBackend`，CUDA 路径回归保持不变。
-3. Phase 2（已完成，代码）：实现 `rocm` capability probe 与 metric catalog，capture 元数据落库；sidecar 采集标为 experimental。
-4. Phase 3（已完成，代码）：补齐 `rocprofiler` 调用、fan-out、输出解析与文件清理；真实 counter 验证见 Phase 5。
-5. Phase 4（已完成，代码）：单测、fixture parity、ROCm E2E 标 `slow`。
-6. Phase 5（真实环境待验证）：在 `gfx936`/DCU 上跑通 sidecar 端到端输出，确定 `rocprof` 正确参数组合并回填峰值 / FLOP 权重校准值。用 `python -m probing.profiling.torch_profiler.rocm_e2e_spike` 先验证离线解析链路，再接入训练短窗口。
+3. Phase 2（已完成，代码）：实现 `rocm` capability probe 与 metric catalog、`PROBING_TORCH_ROOFLINE_CONFIG` 配置收敛；capture 元数据落库。
+4. Phase 3（待改）：把 v1 采集从“窗口内 sidecar”改为 wrapper：生成含 `{pmc}`/`{output}`/`{app}` 且默认 `--timestamp on` 的 `rocprof_wrap_cmd`；实现 offline import（artifact → `profile_counter` → 进程内 `join_rocm_rows_with_timeline` → `profile_roofline`）与临时 artifact 生命周期。
+5. Phase 4（待做）：离线 fixture/单测/dry-run；`rocm_e2e_spike` 验证 CSV/JSON 解析与 wrapper 命令模板（不实际采集）。
+6. Phase 5（真实 DCU 待验证，单卡）：单卡小 bench 跑通 `rocprof -i pmc.txt --timestamp on -d out <app>` 端到端 counter，确认 metric 名 / 时间戳列 / artifact 后缀，回填峰值 / FLOP 权重。
+7. Phase 5b（多卡注入层级，v1 主路径专项）：验证“包整个 `torchrun`”与“launcher 逐 rank 包 worker”的 counter 归属与落盘，确定 rank → artifact 子目录映射；这是单卡阶段验证不了的独立专项。
+8. 后续（暂不实施）：方法 2 进程内 ROCProfiler/HSA 原生采集，恢复“训练中按需 start/stop”；保留 `RooflineBackend` 采集策略替换点。
 
 ## 11. 测试
 
@@ -172,7 +240,8 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
 ## 12. 风险
 
 - `gfx936` 不同 ROCm/DTK 版本 metric 名称可能变化。
-- `rocprofv2 --plugin file` 当前未产出端到端结果，需先验证正确参数组合。
+- DTK `rocprof/rocprofv2` 无 `--pid` attach，v1 只能全程采集；长训练时 artifact 体积与解析成本随运行时长增长，需按窗口 / capture 分区落盘。
+- `--timestamp on` 在不同 DTK 版本的输出列名（`BeginNs/EndNs` vs `Start_Timestamp/End_Timestamp`）可能不同，`rocm_sidecar` 需做列名探测；且 rocprof 的 device/steady 时间戳需与 host wall-clock 做一次时钟域/epoch 对齐，否则时间戳回退关联与窗口切片错位。
+- 多卡 `torchrun` 下 wrapper 注入层级（包 `torchrun` vs 包每 rank python）未经真实验证，counter 到 rank 的归属可能错配。
 - 多 pass 采集受硬件计数器限制，counter 分组和 session 管理复杂。
-- 多 rank 并发 sidecar 需要互斥与文件生命周期控制。
-- 算子关联精度依赖 `correlation_id` 是否在真实训练栈可用。
+- 算子关联精度依赖 Kineto timeline 的 `external_id` 可用性；rocprof artifact 通常无 correlation_id，fallback 到 kernel 名 + 时间戳最近 launch 时精度下降。
