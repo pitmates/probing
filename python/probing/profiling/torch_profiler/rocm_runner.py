@@ -34,7 +34,7 @@ DEFAULT_ROCM_ROCPROF_CMD = "rocprof --output {output} --basenames on --stats"
 
 def sidecar_enabled() -> bool:
     config = load_roofline_config()
-    if not config.enabled:
+    if not config.rocm_enabled:
         return False
     legacy = os.environ.get("PROBING_TORCH_ROOFLINE_ROCM_PROFILE", "").strip().lower()
     return legacy not in {"0", "false", "no", "off"}

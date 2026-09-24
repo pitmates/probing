@@ -7,7 +7,7 @@ path to a JSON file::
 
     {
       "backend": "rocm",
-      "enabled": true,
+      "rocm_enabled": true,
       "rocprof_cmd": "rocprof --output {output} --basenames on --stats",
       "probe_cmd": "rocprofv2 --list-counters",
       "metrics": ["TCC_EA_RDREQ_32B", "TCC_EA_RDREQ", "TCC_EA_WRREQ_64B", "TCC_EA_WRREQ"],
@@ -23,6 +23,7 @@ deployments keep working, but new setup does not need them.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -33,7 +34,7 @@ CONFIG_ENV = "PROBING_TORCH_ROOFLINE_CONFIG"
 
 @dataclass(frozen=True)
 class RooflineConfig:
-    enabled: bool = True
+    rocm_enabled: bool = True
     backend: str = "auto"
     rocprof_cmd: str = ""
     probe_cmd: str = ""
@@ -63,14 +64,19 @@ def _parse_weights(value: Any) -> dict[str, int] | None:
             continue
         if isinstance(weight, bool) or not isinstance(weight, (int, float)):
             continue
-        if weight < 0:
+        if isinstance(weight, int):
+            if weight < 0:
+                continue
+            weights[name.strip()] = weight
+            continue
+        if not math.isfinite(weight) or weight < 0:
             continue
         weights[name.strip()] = int(weight)
     return weights
 
 
 def _read_raw_config() -> dict[str, Any]:
-    raw = os.environ.get(CONFIG_ENV, "").strip()
+    raw = os.environ.get(CONFIG_ENV, "").lstrip("\ufeff").strip()
     if not raw:
         return {}
     if raw.startswith("{"):
@@ -92,9 +98,9 @@ def load_roofline_config() -> RooflineConfig:
     """Read ``PROBING_TORCH_ROOFLINE_CONFIG`` with legacy env fallbacks."""
     raw = _read_raw_config()
 
-    enabled = raw.get("enabled", True)
-    if not isinstance(enabled, bool):
-        enabled = True
+    rocm_enabled = raw.get("rocm_enabled", raw.get("enabled", True))
+    if not isinstance(rocm_enabled, bool):
+        rocm_enabled = True
 
     backend = raw.get("backend", "auto")
     if not isinstance(backend, str) or not backend.strip():
@@ -115,7 +121,7 @@ def load_roofline_config() -> RooflineConfig:
     flop_weights = _parse_weights(raw.get("flop_weights"))
 
     return RooflineConfig(
-        enabled=enabled,
+        rocm_enabled=rocm_enabled,
         backend=backend,
         rocprof_cmd=rocprof_cmd,
         probe_cmd=probe_cmd,

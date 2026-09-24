@@ -34,8 +34,10 @@ from typing import Any
 
 def _required_metrics() -> tuple[str, ...]:
     from probing.profiling.torch_profiler.rocm_metrics import ROCM_DEFAULT_METRICS
+    from probing.profiling.torch_profiler.config import load_roofline_config
 
-    return ROCM_DEFAULT_METRICS
+    config = load_roofline_config()
+    return config.metrics or ROCM_DEFAULT_METRICS
 
 
 def _detect() -> tuple[dict[str, Any], Any]:

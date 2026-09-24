@@ -136,7 +136,7 @@ Phase 0 已确认当前 DCU（`gfx936` / HCU，4 × 80 CU、8 Shader Engine、15
 - 新增 capture 元数据列：`counter_backend`、`device_vendor`、`device_model`、`device_arch`。
 - 表 `python.profile_counter` / `python.profile_roofline` 的结构保持稳定。
 - 新增 env（推荐只用一个 `PROBING_TORCH_ROOFLINE_CONFIG`，以下旧版变量保留为 fallback）：
-  - `PROBING_TORCH_ROOFLINE_CONFIG`：内联 JSON 或文件路径，聚合 `backend` / `enabled` / `rocprof_cmd` / `probe_cmd` / `metrics` / `peaks` / `flop_weights`
+  - `PROBING_TORCH_ROOFLINE_CONFIG`：内联 JSON 或文件路径，聚合 `backend` / `rocm_enabled` / `rocprof_cmd` / `probe_cmd` / `metrics` / `peaks` / `flop_weights`
   - `PROBING_TORCH_ROOFLINE_BACKEND=auto|cuda|rocm`
   - `PROBING_TORCH_ROOFLINE_ROCM_METRICS`
   - `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON`

@@ -16,7 +16,7 @@ def test_inline_json_config(monkeypatch):
         json.dumps(
             {
                 "backend": "rocm",
-                "enabled": True,
+                "rocm_enabled": True,
                 "rocprof_cmd": "rocprofv2 --output {output}",
                 "metrics": ["A", "B", "A"],
                 "peaks": {"backend": "rocm", "peaks": {"fp16_tensor_dense": {}}},
@@ -25,7 +25,7 @@ def test_inline_json_config(monkeypatch):
         ),
     )
     config = load_roofline_config()
-    assert config.enabled is True
+    assert config.rocm_enabled is True
     assert config.backend == "rocm"
     assert config.rocprof_cmd == "rocprofv2 --output {output}"
     assert config.metrics == ("A", "B")
@@ -36,13 +36,13 @@ def test_inline_json_config(monkeypatch):
 def test_json_file_config(monkeypatch, tmp_path):
     path = tmp_path / "roofline.json"
     path.write_text(
-        json.dumps({"backend": "cuda", "metrics": ["m0"], "enabled": False}),
+        json.dumps({"backend": "cuda", "metrics": ["m0"], "rocm_enabled": False}),
         encoding="utf-8",
     )
     monkeypatch.setenv(CONFIG_ENV, str(path))
     config = load_roofline_config()
     assert config.backend == "cuda"
-    assert config.enabled is False
+    assert config.rocm_enabled is False
     assert config.metrics == ("m0",)
 
 
@@ -53,4 +53,13 @@ def test_missing_or_invalid_config_falls_back_to_defaults(monkeypatch):
     monkeypatch.setenv(CONFIG_ENV, "not json")
     config = load_roofline_config()
     assert config.backend == "auto"
-    assert config.enabled is True
+    assert config.rocm_enabled is True
+
+
+def test_nan_and_infinity_weights_are_dropped(monkeypatch):
+    monkeypatch.setenv(
+        CONFIG_ENV,
+        '{"flop_weights": {"A": 2, "B": NaN, "C": Infinity}}',
+    )
+    config = load_roofline_config()
+    assert config.flop_weights == {"A": 2}

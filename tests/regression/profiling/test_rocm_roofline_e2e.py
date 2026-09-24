@@ -32,8 +32,8 @@ def test_rocm_sidecar_produces_counter_facts() -> None:
         sidecar_enabled,
     )
 
-    assert sidecar_enabled(), "PROBING_TORCH_ROOFLINE_ROCM_PROFILE must be 1"
-    assert sidecar_command(), "PROBING_TORCH_ROOFLINE_ROCPROF_CMD must be set"
+    assert sidecar_enabled(), "rocm roofline sidecar must be enabled"
+    assert sidecar_command(), "rocm rocprof command template must be available"
 
     session = RocmSidecarSession()
     assert session.start() == "", session.start()
