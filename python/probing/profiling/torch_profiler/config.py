@@ -34,6 +34,7 @@ from typing import Any
 CONFIG_ENV = "PROBING_TORCH_ROOFLINE_CONFIG"
 ARTIFACT_DIR_ENV = "PROBING_TORCH_ROOFLINE_ARTIFACT_DIR"
 KEEP_ARTIFACTS_ENV = "PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS"
+FINALIZED_ENV = "PROBING_TORCH_ROOFLINE_FINALIZED"
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class RooflineConfig:
     flop_weights: dict[str, int] | None = None
     artifact_dir: str = ""
     keep_artifacts: bool = False
+    finalized: bool = False
 
 
 def _parse_metrics(value: Any) -> tuple[str, ...]:
@@ -136,6 +138,14 @@ def load_roofline_config() -> RooflineConfig:
         "on",
     }
 
+    finalized = raw.get("finalized") is True
+    finalized = finalized or os.environ.get(FINALIZED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
     peaks = raw.get("peaks") if isinstance(raw.get("peaks"), dict) else None
     flop_weights = _parse_weights(raw.get("flop_weights"))
 
@@ -149,4 +159,5 @@ def load_roofline_config() -> RooflineConfig:
         flop_weights=flop_weights,
         artifact_dir=artifact_dir,
         keep_artifacts=keep_artifacts,
+        finalized=finalized,
     )

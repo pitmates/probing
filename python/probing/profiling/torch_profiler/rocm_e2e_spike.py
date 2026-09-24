@@ -111,7 +111,7 @@ def run_import(artifact_dir: str, rank: int) -> dict[str, Any]:
         "rank": rank,
     }
 
-    rows, import_error = import_artifact_rows(artifact_dir, rank)
+    rows, import_error = import_artifact_rows(artifact_dir, rank, finalized=True)
     report["import_error"] = import_error
     report["parsed_rows"] = len(rows)
     report["first_rows"] = rows[:5]

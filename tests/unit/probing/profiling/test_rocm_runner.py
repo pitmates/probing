@@ -8,6 +8,7 @@ from pathlib import Path
 
 from probing.profiling.torch_profiler.rocm_runner import (
     DEFAULT_ROCM_ROCPROF_CMD,
+    artifact_finalized,
     artifact_root,
     import_artifact_rows,
     keep_artifacts,
@@ -89,7 +90,7 @@ def test_import_artifact_rows_parses_and_cleanups(tmp_path):
     launch = tmp_path / "rank0" / "launch-1"
     _write_artifact(launch)
 
-    rows, error = import_artifact_rows(str(tmp_path), rank=0)
+    rows, error = import_artifact_rows(str(tmp_path), rank=0, finalized=True)
     assert error == ""
     assert [row["kernel_name"] for row in rows] == ["gemm_kernel"]
     assert not launch.exists()
@@ -100,16 +101,45 @@ def test_import_artifact_rows_keeps_when_requested(tmp_path):
     launch = tmp_path / "rank0" / "launch-1"
     path = _write_artifact(launch)
 
-    rows, error = import_artifact_rows(str(tmp_path), rank=0, keep=True)
+    rows, error = import_artifact_rows(str(tmp_path), rank=0, keep=True, finalized=True)
     assert error == ""
     assert rows
     assert path.exists()
 
 
 def test_import_artifact_rows_reports_missing_directory(tmp_path):
-    rows, error = import_artifact_rows(str(tmp_path), rank=0)
+    rows, error = import_artifact_rows(str(tmp_path), rank=0, finalized=True)
     assert rows == []
     assert "no rocm counter artifact directory" in error
+
+
+def test_import_artifact_rows_refuses_unfinalized(tmp_path):
+    launch = tmp_path / "rank0" / "launch-1"
+    _write_artifact(launch)
+
+    rows, error = import_artifact_rows(str(tmp_path), rank=0)
+    assert rows == []
+    assert "not finalized" in error
+    assert launch.exists()
+
+
+def test_artifact_finalized_respects_env(monkeypatch):
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_FINALIZED", "1")
+    assert artifact_finalized() is True
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_FINALIZED", "0")
+    assert artifact_finalized() is False
+
+
+def test_import_artifact_rows_skips_stray_component(tmp_path):
+    launch = tmp_path / "rank0" / "launch-1"
+    launch.mkdir(parents=True)
+    _write_artifact(launch, name="results.csv")
+    # A newer stray JSON component must be skipped in favor of the counter CSV.
+    (launch / "metadata.json").write_text('{"component": true}', encoding="utf-8")
+
+    rows, error = import_artifact_rows(str(tmp_path), rank=0, finalized=True)
+    assert error == ""
+    assert [row["kernel_name"] for row in rows] == ["gemm_kernel"]
 
 
 def test_artifact_root_prefers_env(monkeypatch):

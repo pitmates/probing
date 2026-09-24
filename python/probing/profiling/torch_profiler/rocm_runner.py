@@ -4,7 +4,7 @@ DTK ``rocprof`` / ``rocprofv2`` can only wrap-launch an application; they do
 not attach to a running training process. The v1 model therefore splits the
 pipeline in two:
 
-* The launcher renders ``wrap_command()`` and runs
+* The operator or a launcher renders ``wrap_command()`` and runs
 
   ``rocprof -i {pmc} --timestamp on -d {artifact_dir}/rank{rank}/{launch_ts} <app>``
 
@@ -30,6 +30,7 @@ from typing import Any, Optional
 
 from .config import (
     ARTIFACT_DIR_ENV,
+    FINALIZED_ENV,
     KEEP_ARTIFACTS_ENV,
     load_roofline_config,
 )
@@ -106,6 +107,26 @@ def keep_artifacts() -> bool:
     }
 
 
+def artifact_finalized() -> bool:
+    """Return whether the whole-run artifact is confirmed finalized.
+
+    In v1 the wrapper collects for the entire run, so an in-process
+    ``profile/start`` finalize may race a still-writing ``rocprof``. Import
+    must be gated on an explicit ``PROBING_TORCH_ROOFLINE_FINALIZED=1`` (or
+    config ``finalized: true``) signal; otherwise the offline ``rocm_e2e_spike
+    --artifact-dir`` path is the post-run import surface.
+    """
+    config = load_roofline_config()
+    if config.finalized:
+        return True
+    return os.environ.get(FINALIZED_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _artifact_files(outdir: str) -> list[str]:
     if not outdir or not os.path.isdir(outdir):
         return []
@@ -118,7 +139,13 @@ def _artifact_files(outdir: str) -> list[str]:
 
 
 def discover_artifact_files(artifact_root_value: str, rank: int) -> list[str]:
-    """Return the artifact files for ``rank``, newest-first call site order."""
+    """Return candidate artifact files for ``rank``, unsorted.
+
+    Files under ``artifact_root_value/rank{rank}`` take precedence; when that
+    directory has no artifacts the caller falls back to
+    ``artifact_root_value`` (single-rank benches). Ordering is left to the
+    caller, which sorts by mtime before import.
+    """
     if not artifact_root_value:
         return []
     roots: list[str] = []
@@ -137,16 +164,34 @@ def import_artifact_rows(
     rank: int,
     *,
     keep: Optional[bool] = None,
+    finalized: Optional[bool] = None,
 ) -> tuple[list[dict[str, Any]], str]:
-    """Discover, parse, and clean up the latest ROCm counter artifact.
+    """Discover, parse, and clean up a finalized ROCm counter artifact.
 
-    Returns ``(rows, error)``. ``error`` is empty on success. The newest JSON,
-    CSV, or JSONL file under ``artifact_root_value/rank{rank}`` (falling back to
-    ``artifact_root_value`` for single-rank benches) is parsed; on success the
-    containing launch directory is removed unless retention is requested.
+    Returns ``(rows, error)``. ``error`` is empty on success. Unless
+    ``finalized`` is explicitly true (or ``PROBING_TORCH_ROOFLINE_FINALIZED=1``),
+    import refuses to run: the v1 wrapper collects for the whole run, so an
+    in-process finalize could otherwise read a half-written file and silently
+    surface truncated counters as ``partial``.
+
+    Candidates are tried newest-first; a candidate that fails to parse or
+    yields no rows is skipped so a stray component file (e.g. a ``.json``
+    alongside ``results.csv``) does not mask the real counter artifact. On
+    success the containing launch directory is removed unless retention is
+    requested.
     """
     if not artifact_root_value:
         return [], "rocm roofline artifact directory is not configured"
+
+    if finalized is None:
+        finalized = artifact_finalized()
+    if not finalized:
+        return [], (
+            "rocm counter artifact is not finalized yet; the whole-run wrapper "
+            "may still be writing. Import after collection via "
+            "``rocm_e2e_spike --artifact-dir``, or set "
+            "PROBING_TORCH_ROOFLINE_FINALIZED=1 once collection has finished."
+        )
 
     files = discover_artifact_files(artifact_root_value, rank)
     if not files:
@@ -155,25 +200,32 @@ def import_artifact_rows(
             f"{artifact_root_value}/rank{rank}"
         )
 
-    latest = max(files, key=os.path.getmtime)
-    try:
-        payload = open(latest, encoding="utf-8").read()
-    except OSError as exc:
-        return [], f"failed to read rocprofiler artifact {os.path.basename(latest)}: {exc}"
+    ordered = sorted(files, key=os.path.getmtime, reverse=True)
+    rows: list[dict[str, Any]] = []
+    consumed: Optional[str] = None
+    last_error = ""
+    for path in ordered:
+        try:
+            payload = open(path, encoding="utf-8").read()
+        except OSError as exc:
+            last_error = f"failed to read rocprofiler artifact {os.path.basename(path)}: {exc}"
+            continue
+        try:
+            rows = parse_counter_artifact(payload)
+        except (ValueError, TypeError) as exc:
+            last_error = f"rocm artifact parse failed: {exc}"
+            continue
+        if rows:
+            consumed = path
+            break
+        last_error = f"rocprofiler artifact {os.path.basename(path)} contained no counter rows"
 
-    try:
-        rows = parse_counter_artifact(payload)
-    except (ValueError, TypeError) as exc:
-        return [], f"rocm artifact parse failed: {exc}"
-
-    if not rows:
-        return [], (
-            f"rocprofiler artifact {os.path.basename(latest)} contained no counter rows"
-        )
+    if consumed is None:
+        return [], last_error or "rocm counter artifacts contained no counter rows"
 
     remove = keep_artifacts() if keep is None else keep
     if not remove:
-        parent = os.path.dirname(latest)
+        parent = os.path.dirname(consumed)
         if os.path.abspath(parent) != os.path.abspath(artifact_root_value):
             shutil.rmtree(parent, ignore_errors=True)
         else:

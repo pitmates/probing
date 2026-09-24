@@ -38,7 +38,7 @@ def test_rocm_wrapper_imports_counter_facts() -> None:
     artifact_dir = os.getenv("PROBING_TORCH_ROOFLINE_ARTIFACT_DIR", "")
     assert artifact_dir, "PROBING_TORCH_ROOFLINE_ARTIFACT_DIR must point at rocprof artifacts"
 
-    rows, error = import_artifact_rows(artifact_dir, rank=0)
+    rows, error = import_artifact_rows(artifact_dir, rank=0, finalized=True)
     assert error == "", error
     assert rows, "rocprofiler produced no counter rows"
 

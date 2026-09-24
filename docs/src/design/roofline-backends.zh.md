@@ -111,7 +111,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 
 **统计期（offline import）**
 
-- probing 进程内 collector 用 `rocm_sidecar.parse_counter_artifact()` 解析 artifact，产出 `python.profile_counter` 事实行，`flops` 保持 `NULL`。
+- probing 进程内 collector 用 `rocm_sidecar.parse_counter_artifact()` 解析 artifact，产出 `python.profile_counter` 事实行，`flops` 保持 `NULL`。v1 的真实 rocprof 输出是裸 CSV（走 `parse_counter_csv`）；JSON 分支要求 `format=probing-rocm-sidecar-v1` envelope，目前只用于本库 fixture 与 parity 测试，不代表裸 rocprof JSON 可直接 import。
 - 再在进程内用 `join_rocm_rows_with_timeline()` 把 counter 行与当次 capture 的 Kineto `profiler.events()`（`timeline_events`）关联：优先 `correlation_id`，缺失时按时间戳回退，得到 `op_stack`。
 - 随后用 `rocm_metrics` 换算 DRAM bytes（`TCC_EA_*`）与 FLOPs（`SQ_INSTS_*`，未校准为 `NULL`），写 `python.profile_roofline`。
 - 职责边界：`parse_counter_artifact()` 只做 artifact 规范化；kernel→op 关联由 collector 内的 `join_rocm_rows_with_timeline()` 完成，落库后不再二次 SQL JOIN。`python.torch_trace` 是 TorchProbe 的模块级采样表，不是 Kineto kernel timeline，不参与本关联。
@@ -158,8 +158,9 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 ### 5.5 offline import 契约（v1，Phase 3 已实现）
 
 - 触发入口：`profile/start?analysis=roofline&artifact_dir=…` 标记窗口；finalize（自动或 `profile/stop`）时扫描 artifact 目录并 import。`artifact_dir` 缺省取 `PROBING_TORCH_ROOFLINE_ARTIFACT_DIR`，再回退 `rocprof_cmd` 的 `{output}`。
-- 发现 / 命名：`{artifact_dir}/rank{rank}/{launch_ts}/*`；`capture_id` 在 offline import 时才生成并与窗口关联，文件名不预取 `capture_id`。import 默认取该 rank 最新 `launch_ts` 子目录，或由 artifact 目录内唯一子目录 / 环境变量显式指定；真实后缀与时间戳列名以 Phase 5 的 rocprof 输出为准。
+- 发现 / 命名：`{artifact_dir}/rank{rank}/{launch_ts}/*`；`capture_id` 在 offline import 时才生成并与窗口关联，文件名不预取 `capture_id`。import 按 mtime 从新到旧遍历候选，跳过解析失败或零行的 stray 组件文件，取第一个产出 counter 行的 artifact；真实后缀与时间戳列名以 Phase 5 的 rocprof 输出为准。
 - 回收：import 成功后删除临时 artifact；`PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS=1` 保留现场。
+- finalized 门控：全程采集下进程内 finalize 可能与仍在写盘的 rocprof 竞态。import 前需 `PROBING_TORCH_ROOFLINE_FINALIZED=1`（或 config `finalized: true`）确认采集已结束；未确认时降级 `unavailable` 并附原因，不消费半截文件。`rocm_e2e_spike --artifact-dir` 是训后 import 入口，自动以 `finalized=True` 调用。
 - v1 不新增 `profile_capture.artifact_path` 列，artifact 位置由目录约定承载；确需跨进程 / 延迟 import 时再补列与 CLI/HTTP 契约。
 - HTTP 表面变化已同步 `probing/server/API.md`；`tests/regression/spec/api_spec.json` 不记录查询参数，无需为 `artifact_dir` 增列。
 
@@ -201,7 +202,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 - 新增 capture 元数据列：`counter_backend`、`device_vendor`、`device_model`、`device_arch`。
 - 表 `python.profile_counter` / `python.profile_roofline` 的结构保持稳定。
 - 新增 env（推荐只用一个 `PROBING_TORCH_ROOFLINE_CONFIG`，以下旧版变量保留为 fallback）：
-  - `PROBING_TORCH_ROOFLINE_CONFIG`：内联 JSON 或文件路径，聚合 `backend` / `rocm_enabled` / `rocprof_cmd` / `probe_cmd` / `metrics` / `peaks` / `flop_weights`
+  - `PROBING_TORCH_ROOFLINE_CONFIG`：内联 JSON 或文件路径，聚合 `backend` / `rocm_enabled` / `rocprof_cmd` / `probe_cmd` / `metrics` / `peaks` / `flop_weights` / `artifact_dir` / `keep_artifacts` / `finalized`
   - `PROBING_TORCH_ROOFLINE_BACKEND=auto|cuda|rocm`
   - `PROBING_TORCH_ROOFLINE_ROCM_METRICS`
   - `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON`
@@ -209,6 +210,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
   - `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD`（wrapper probe：验证最小 kernel 能否产出 counter，不再做 attach 式 dry-run 探测）
   - `PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON`（显式指令→FLOP 校准）
   - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（wrapper 采集开关；旧名 sidecar 保留兼容，新版默认开启）
+  - `PROBING_TORCH_ROOFLINE_ARTIFACT_DIR` / `PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS` / `PROBING_TORCH_ROOFLINE_FINALIZED`（offline import 目录 / 保留现场 / 采集完成门控）
   - `PROBING_TORCH_PROFILER_CLUSTER_FANOUT=0|1`（`profile/start` 按 rank fan-out）
 - 同步更新 `env-vars`、`sql-tables`、`semantic_catalog` 和 `operator_roofline` skill。
 
