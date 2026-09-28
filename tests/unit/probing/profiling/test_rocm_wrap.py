@@ -140,7 +140,7 @@ def test_render_rank_wrapper_embeds_rank_and_script(monkeypatch):
     assert text.startswith("#!/bin/bash")
     assert 'RANK="${RANK:-${LOCAL_RANK:-0}}"' in text
     assert "/art/rank$RANK/42" in text
-    assert "rocprof -i /art/pmc.txt --timestamp on -d \"$OUT\"" in text
+    assert "rocprofv2 -i /art/pmc.txt --plugin file -d \"$OUT\"" in text
     assert "/usr/bin/python3 -u /train/train.py \"$@\"" in text
 
 

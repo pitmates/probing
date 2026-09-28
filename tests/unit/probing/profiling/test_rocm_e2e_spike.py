@@ -24,7 +24,7 @@ FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "rocm"
 def test_render_wrap_cmd_reports_template_and_command(monkeypatch):
     monkeypatch.setenv(
         "PROBING_TORCH_ROOFLINE_ROCPROF_CMD",
-        "rocprof -i {pmc} --timestamp on -d {output} {app}",
+        "rocprofv2 -i {pmc} --plugin file -d {output} {app}",
     )
     report = spike.render_wrap_cmd(
         pmc="/tmp/a b.txt",
@@ -32,11 +32,11 @@ def test_render_wrap_cmd_reports_template_and_command(monkeypatch):
         app="python bench.py --steps 2",
     )
     assert report["enabled"] is True
-    assert report["template"].startswith("rocprof -i {pmc}")
+    assert report["template"].startswith("rocprofv2 -i {pmc}")
     assert report["artifact_root_default"] == ""
     assert "error" not in report
     assert report["wrap_command"] == (
-        "rocprof -i '/tmp/a b.txt' --timestamp on -d '/tmp/o dir' "
+        "rocprofv2 -i '/tmp/a b.txt' --plugin file -d '/tmp/o dir' "
         "'python bench.py --steps 2'"
     )
 
@@ -45,7 +45,7 @@ def test_render_wrap_cmd_leaves_missing_placeholders(monkeypatch):
     monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
     monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
     report = spike.render_wrap_cmd(pmc="pmc.txt", out_dir="", app="")
-    assert report["wrap_command"] == "rocprof -i pmc.txt --timestamp on -d {output} {app}"
+    assert report["wrap_command"] == "rocprofv2 -i pmc.txt --plugin file -d {output} {app}"
 
 
 def test_render_wrap_cmd_reports_missing_template(monkeypatch):

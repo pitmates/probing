@@ -146,10 +146,10 @@ Non-PROBING-prefixed aliases are also recognized for Megatron compatibility:
 | `PROBING_TORCH_ROOFLINE_BACKEND` | `auto` | Roofline counter backend: `auto`, `cuda`, or `rocm`. |
 | `PROBING_TORCH_ROOFLINE_ROCM_METRICS` | — | Comma-separated ROCm counter override for experimental ROCm captures. |
 | `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON` | — | ROCm peak configuration: `{"backend":"rocm","device_arch":"gfx936","peaks":{...}}`. |
-| `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD` | — | Optional dry-run capability probe for the ROCm sidecar; non-zero exit marks the capture `unavailable`. |
+| `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD` | — | Optional wrapper probe command (`rocprofv2 --list-counters`); a non-zero exit marks the capture `unavailable`. |
 | `PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON` | — | Explicit ROCm instruction-to-FLOP calibration, e.g. `{"SQ_INSTS_VALU": 2}`; unset keeps `flops` NULL. |
 | `PROBING_TORCH_PROFILER_CLUSTER_FANOUT` | `0` | Default fan-out for `pytorch/profile/start` / `stop`; request `cluster=true` forces fan-out and `cluster=false` forces local-only. |
-| `PROBING_TORCH_ROOFLINE_ROCPROF_CMD` | — | Shell template for the experimental ROCm sidecar; `{output}` is replaced with the per-session artifact directory and `{pid}` with the training process id. |
+| `PROBING_TORCH_ROOFLINE_ROCPROF_CMD` | — | Whole-run rocprofiler wrapper template with placeholders `{pmc}`, `{output}`, and `{app}`. Default: `rocprofv2 -i {pmc} --plugin file -d {output} {app}`. |
 | `PROBING_TORCH_ROOFLINE_ROCM_PROFILE` | on | Legacy force-disable flag for the ROCm sidecar; set to `0`/`false` to disable. |
 | `PROBING_TORCH_ROOFLINE_BALANCED_THRESHOLD` | `0.9` | Roofline balanced-classification threshold. |
 | `PROBING_TORCH_ROOFLINE_PEAKS_JSON` | — | Explicit `fp16_tensor_dense` peak values: `{"fp16_tensor_dense":{"peak_flops":312e12,"peak_bytes_per_sec":1.6e12}}`. |

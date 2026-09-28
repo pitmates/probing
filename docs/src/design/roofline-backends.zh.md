@@ -102,11 +102,11 @@ v1 采用两段式模型，采集与统计解耦。
 - 基准命令形态：
 
 ```text
-rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
+rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
 ```
 
-- `{pmc}` 为仅含 DRAM 四计数器与 `SQ_INSTS_*` 的 metric 文件；launcher 渲染时令 `{output}={artifact_dir}/rank{rank}/{launch_ts}`，与 offline import 的发现规则一致。`--timestamp on` 保留 device/steady 时间戳供关联与切片。
-- v1 先单卡单进程验证 `rocprof -i pmc.txt --timestamp on -d out python bench.py`；单机多卡 `torchrun` 由 `probing-roofline` 自动识别并逐 rank 包裹（`--no_python` + 生成的 rank wrapper），每个 rank 写 `{artifact_dir}/rank{rank}/{launch_ts}`。多机多卡的注入层级仍见 Phase 5b 待真机验证。
+- `{pmc}` 为仅含 DRAM 四计数器与 `SQ_INSTS_*` 的 metric 文件；launcher 渲染时令 `{output}={artifact_dir}/rank{rank}/{launch_ts}`，与 offline import 的发现规则一致。`--plugin file` 输出 counter 文件；时间戳列名随 DTK 版本变化，供后续关联与切片。
+- v1 先单卡单进程验证 `rocprofv2 -i pmc.txt --plugin file -d out python bench.py`；单机多卡 `torchrun` 由 `probing-roofline` 自动识别并逐 rank 包裹（`--no_python` + 生成的 rank wrapper），每个 rank 写 `{artifact_dir}/rank{rank}/{launch_ts}`。多机多卡的注入层级仍见 Phase 5b 待真机验证。
 - 模板渲染必须走参数列表或 `shlex.quote`，禁止把 `{pmc}`/`{output}`/`{app}` 直接字符串拼接；路径或训练命令可能含空格/引号。
 - 单命令启动入口：新增 `probing-roofline`（或 `python -m probing.profiling.torch_profiler.rocm_wrap`）——内部按 `ROCM_DEFAULT_METRICS` 生成默认 `pmc`、按 `{artifact_dir}/rank{rank}/{launch_ts}` 拼好 `-d`，并自动置 `PROBING_TORCH_PROFILER_ANALYSIS=roofline`；用户只需把训练命令放在 `--` 之后。`--dry-run` 只打印渲染结果不执行。
 
@@ -143,7 +143,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 
 ```text
 训练启动 / launcher
-   rocprof -i {pmc} --timestamp on -d {artifact_dir}/rank{rank}/{launch_ts} <train_cmd>
+   rocprofv2 -i {pmc} --plugin file -d {artifact_dir}/rank{rank}/{launch_ts} <train_cmd>
         └─ 全程采集 ─▶ {artifact_dir}/rank{rank}/{launch_ts}/*.csv|json （counter artifact）
                               │
                               ▼  rocm_sidecar.parse_counter_artifact()
@@ -207,7 +207,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
   - `PROBING_TORCH_ROOFLINE_BACKEND=auto|cuda|rocm`
   - `PROBING_TORCH_ROOFLINE_ROCM_METRICS`
   - `PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON`
-  - `PROBING_TORCH_ROOFLINE_ROCPROF_CMD`（wrapper 模板，占位符 `{pmc}`/`{output}`/`{app}`，默认含 `--timestamp on`；已由 sidecar 模板 `{output}`/`{pid}` breaking 变更而来）
+  - `PROBING_TORCH_ROOFLINE_ROCPROF_CMD`（wrapper 模板，占位符 `{pmc}`/`{output}`/`{app}`，默认使用 `--plugin file`；已由 sidecar 模板 `{output}`/`{pid}` breaking 变更而来）
   - `PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD`（wrapper probe：验证最小 kernel 能否产出 counter，不再做 attach 式 dry-run 探测）
   - `PROBING_TORCH_ROOFLINE_ROCM_FLOP_WEIGHTS_JSON`（显式指令→FLOP 校准）
   - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（wrapper 采集开关；旧名 sidecar 保留兼容，新版默认开启）
@@ -229,9 +229,9 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 1. Phase 0（已完成）：DCU/ROCm spike，确认 Kineto 不可用，并确认 DTK `rocprof`/`rocprofv2` 只支持 wrap-launch、无 `--pid` attach，据此选定“全程采集 + 离线统计”。
 2. Phase 1（已完成，代码）：抽取 `RooflineBackend`，CUDA 路径回归保持不变。
 3. Phase 2（已完成，代码）：实现 `rocm` capability probe 与 metric catalog、`PROBING_TORCH_ROOFLINE_CONFIG` 配置收敛；capture 元数据落库。
-4. Phase 3（已完成，代码）：v1 采集已从“窗口内 sidecar”改为 wrapper：`wrap_command()` 渲染含 `{pmc}`/`{output}`/`{app}` 且默认 `--timestamp on` 的命令；`import_artifact_rows()` 实现 offline import（artifact → `profile_counter` → 进程内 `join_rocm_rows_with_timeline` → `profile_roofline`）与临时 artifact 回收。
+4. Phase 3（已完成，代码）：v1 采集已从“窗口内 sidecar”改为 wrapper：`wrap_command()` 渲染含 `{pmc}`/`{output}`/`{app}` 且默认使用 `--plugin file` 的命令；`import_artifact_rows()` 实现 offline import（artifact → `profile_counter` → 进程内 `join_rocm_rows_with_timeline` → `profile_roofline`）与临时 artifact 回收。
 5. Phase 4（已完成，代码）：离线 fixture/单测/dry-run；`rocm_e2e_spike` 验证 CSV/JSON 解析与 wrapper 命令模板（不实际采集）。本机无 `_core`，pytest 未运行，待真实环境执行。
-6. Phase 5（真实 DCU 待验证，单卡）：单卡小 bench 跑通 `rocprof -i pmc.txt --timestamp on -d out <app>` 端到端 counter，确认 metric 名 / 时间戳列 / artifact 后缀，回填峰值 / FLOP 权重。
+6. Phase 5（真实 DCU 待验证，单卡）：单卡小 bench 跑通 `rocprofv2 -i pmc.txt --plugin file -d out <app>` 端到端 counter，确认 metric 名 / 时间戳列 / artifact 后缀，回填峰值 / FLOP 权重。
 7. Phase 5b（多卡注入层级，v1 主路径专项）：单机多卡逐 rank 包裹已实现（`rocm_wrap` 自动识别 `torchrun`，生成 `--no_python` rank wrapper）；多机多卡与 counter 归属的真实落盘仍需真机验证。
 8. 后续（暂不实施）：方法 2 进程内 ROCProfiler/HSA 原生采集，恢复“训练中按需 start/stop”；保留 `RooflineBackend` 采集策略替换点。
 
@@ -246,7 +246,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 
 - `gfx936` 不同 ROCm/DTK 版本 metric 名称可能变化。
 - DTK `rocprof/rocprofv2` 无 `--pid` attach，v1 只能全程采集；长训练时 artifact 体积与解析成本随运行时长增长，需按窗口 / capture 分区落盘。
-- `--timestamp on` 在不同 DTK 版本的输出列名（`BeginNs/EndNs` vs `Start_Timestamp/End_Timestamp`）可能不同，`rocm_sidecar` 需做列名探测；且 rocprof 的 device/steady 时间戳需与 host wall-clock 做一次时钟域/epoch 对齐，否则时间戳回退关联与窗口切片错位。
+- `rocprofv2` 不同 DTK 版本的输出列名（`BeginNs/EndNs` vs `Start_Timestamp/End_Timestamp`）可能不同，`rocm_sidecar` 需做列名探测；且 rocprofv2 的 device/steady 时间戳需与 host wall-clock 做一次时钟域/epoch 对齐，否则时间戳回退关联与窗口切片错位。
 - 多卡 `torchrun` 下 wrapper 注入层级（包 `torchrun` vs 包每 rank python）未经真实验证，counter 到 rank 的归属可能错配。
 - 多 pass 采集受硬件计数器限制，counter 分组和 session 管理复杂。
 - 算子关联精度依赖 Kineto timeline 的 `external_id` 可用性；rocprof artifact 通常无 correlation_id，fallback 到 kernel 名 + 时间戳最近 launch 时精度下降。

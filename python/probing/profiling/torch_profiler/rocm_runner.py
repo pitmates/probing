@@ -6,7 +6,7 @@ pipeline in two:
 
 * The operator or a launcher renders ``wrap_command()`` and runs
 
-  ``rocprof -i {pmc} --timestamp on -d {artifact_dir}/rank{rank}/{launch_ts} <app>``
+  ``rocprofv2 -i {pmc} --plugin file -d {artifact_dir}/rank{rank}/{launch_ts} <app>``
 
   around the training process, producing per-rank counter artifacts for the
   entire run.
@@ -38,7 +38,7 @@ from .rocm_sidecar import parse_counter_artifact
 
 _ARTIFACT_SUFFIXES = {".json", ".csv", ".jsonl"}
 
-DEFAULT_ROCM_ROCPROF_CMD = "rocprof -i {pmc} --timestamp on -d {output} {app}"
+DEFAULT_ROCM_ROCPROF_CMD = "rocprofv2 -i {pmc} --plugin file -d {output} {app}"
 
 
 def sidecar_enabled() -> bool:
