@@ -73,12 +73,21 @@ def test_main_dry_run_renders_command(monkeypatch, tmp_path, capsys):
     assert "rocprof -i pmc.txt -d out app" in captured.err
 
 
-def test_main_missing_artifact_dir(monkeypatch, capsys):
+def test_main_defaults_artifact_dir(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv(rocm_wrap.ARTIFACT_DIR_ENV, raising=False)
     monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    def fake_wrap_command(*, pmc, output, app):
+        return "rocprof -i pmc.txt -d out app"
+
+    monkeypatch.setattr(rocm_wrap, "wrap_command", fake_wrap_command)
     code = rocm_wrap.main(["--dry-run", "--", "python", "train.py"])
-    assert code == 2
-    assert "artifact directory is not configured" in capsys.readouterr().err
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "roofline_artifacts" in captured.err
+    assert "rocprof -i pmc.txt -d out app" in captured.err
+    assert os.environ.get(rocm_wrap.ARTIFACT_DIR_ENV) is not None
 
 
 def test_is_torchrun_command_variants():

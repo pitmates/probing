@@ -43,6 +43,7 @@ from .rocm_runner import (
 
 DEFAULT_PMC_FILENAME = "rocm_pmc_default.txt"
 RANK_WRAPPER_FILENAME = "rocm_rank_wrap.sh"
+DEFAULT_ARTIFACT_DIRNAME = "roofline_artifacts"
 
 # torchrun options that consume a following value. ``--opt=value`` is handled
 # separately because it never consumes the next token. Flag options (for
@@ -274,13 +275,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     config = load_roofline_config()
     artifact_dir = config.artifact_dir or os.environ.get(ARTIFACT_DIR_ENV, "").strip()
     if not artifact_dir:
+        artifact_dir = os.path.join(os.getcwd(), DEFAULT_ARTIFACT_DIRNAME)
+        os.environ[ARTIFACT_DIR_ENV] = artifact_dir
         print(
-            "roofline artifact directory is not configured; set "
-            "PROBING_TORCH_ROOFLINE_ARTIFACT_DIR or "
-            "PROBING_TORCH_ROOFLINE_CONFIG.artifact_dir",
+            f"roofline artifact directory defaults to {artifact_dir} "
+            f"(override with {ARTIFACT_DIR_ENV})",
             file=sys.stderr,
         )
-        return 2
 
     if not sidecar_enabled():
         print(
