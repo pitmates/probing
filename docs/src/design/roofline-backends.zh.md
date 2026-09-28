@@ -106,7 +106,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 ```
 
 - `{pmc}` 为仅含 DRAM 四计数器与 `SQ_INSTS_*` 的 metric 文件；launcher 渲染时令 `{output}={artifact_dir}/rank{rank}/{launch_ts}`，与 offline import 的发现规则一致。`--timestamp on` 保留 device/steady 时间戳供关联与切片。
-- v1 先单卡单进程验证 `rocprof -i pmc.txt --timestamp on -d out python bench.py`；多卡 `torchrun` 注入层级（包整个 `torchrun`，或 launcher 逐 rank 包 worker）是 v1 主路径专项，见 Phase 5b。
+- v1 先单卡单进程验证 `rocprof -i pmc.txt --timestamp on -d out python bench.py`；单机多卡 `torchrun` 由 `probing-roofline` 自动识别并逐 rank 包裹（`--no_python` + 生成的 rank wrapper），每个 rank 写 `{artifact_dir}/rank{rank}/{launch_ts}`。多机多卡的注入层级仍见 Phase 5b 待真机验证。
 - 模板渲染必须走参数列表或 `shlex.quote`，禁止把 `{pmc}`/`{output}`/`{app}` 直接字符串拼接；路径或训练命令可能含空格/引号。
 - 单命令启动入口：新增 `probing-roofline`（或 `python -m probing.profiling.torch_profiler.rocm_wrap`）——内部按 `ROCM_DEFAULT_METRICS` 生成默认 `pmc`、按 `{artifact_dir}/rank{rank}/{launch_ts}` 拼好 `-d`，并自动置 `PROBING_TORCH_PROFILER_ANALYSIS=roofline`；用户只需把训练命令放在 `--` 之后。`--dry-run` 只打印渲染结果不执行。
 
@@ -222,6 +222,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 - 每 rank 的 `profile_capture` 保持独立，查询时通过 `cluster query` 聚合。
 - 不在 SQL 层合成一条假全局 capture。
 - ROCm v1：训练期 counter 由 launcher 在启动时采集；`profile/start` fan-out 只触发各 rank 的 offline import/finalize，artifact 逐 rank 解析、逐 rank 落库。
+- 单机多卡：`probing-roofline -- torchrun --nproc_per_node=N ...` 已实现逐 rank 包裹（torchrun `--no_python` + 生成的 `rocm_rank_wrap.sh`，靠 `RANK` 决定输出子目录）；counter 到 rank 的映射由 `{artifact_dir}/rank{rank}/{launch_ts}` 保证。多机多卡（跨节点 `--nnodes>1`）仍属 Phase 5b 待验证。
 
 ## 10. 实施阶段
 
@@ -231,7 +232,7 @@ rocprof -i {pmc} --timestamp on -d {output} <train_cmd>
 4. Phase 3（已完成，代码）：v1 采集已从“窗口内 sidecar”改为 wrapper：`wrap_command()` 渲染含 `{pmc}`/`{output}`/`{app}` 且默认 `--timestamp on` 的命令；`import_artifact_rows()` 实现 offline import（artifact → `profile_counter` → 进程内 `join_rocm_rows_with_timeline` → `profile_roofline`）与临时 artifact 回收。
 5. Phase 4（已完成，代码）：离线 fixture/单测/dry-run；`rocm_e2e_spike` 验证 CSV/JSON 解析与 wrapper 命令模板（不实际采集）。本机无 `_core`，pytest 未运行，待真实环境执行。
 6. Phase 5（真实 DCU 待验证，单卡）：单卡小 bench 跑通 `rocprof -i pmc.txt --timestamp on -d out <app>` 端到端 counter，确认 metric 名 / 时间戳列 / artifact 后缀，回填峰值 / FLOP 权重。
-7. Phase 5b（多卡注入层级，v1 主路径专项）：验证“包整个 `torchrun`”与“launcher 逐 rank 包 worker”的 counter 归属与落盘，确定 rank → artifact 子目录映射；这是单卡阶段验证不了的独立专项。
+7. Phase 5b（多卡注入层级，v1 主路径专项）：单机多卡逐 rank 包裹已实现（`rocm_wrap` 自动识别 `torchrun`，生成 `--no_python` rank wrapper）；多机多卡与 counter 归属的真实落盘仍需真机验证。
 8. 后续（暂不实施）：方法 2 进程内 ROCProfiler/HSA 原生采集，恢复“训练中按需 start/stop”；保留 `RooflineBackend` 采集策略替换点。
 
 ## 11. 测试

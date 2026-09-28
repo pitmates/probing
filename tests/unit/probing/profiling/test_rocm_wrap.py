@@ -79,3 +79,80 @@ def test_main_missing_artifact_dir(monkeypatch, capsys):
     code = rocm_wrap.main(["--dry-run", "--", "python", "train.py"])
     assert code == 2
     assert "artifact directory is not configured" in capsys.readouterr().err
+
+
+def test_is_torchrun_command_variants():
+    assert rocm_wrap.is_torchrun_command(["torchrun", "--nproc_per_node", "4"])
+    assert rocm_wrap.is_torchrun_command(
+        ["python", "-m", "torch.distributed.run", "train.py"]
+    )
+    assert rocm_wrap.is_torchrun_command(
+        ["python3", "-m", "torch.distributed.run", "train.py"]
+    )
+    assert not rocm_wrap.is_torchrun_command(["python", "train.py"])
+    assert not rocm_wrap.is_torchrun_command([])
+
+
+def test_split_torchrun_command_separates_options_script_args():
+    opts, script, script_args = rocm_wrap.split_torchrun_command(
+        ["--nproc_per_node", "4", "train.py", "--steps", "2"]
+    )
+    assert opts == ["--nproc_per_node", "4"]
+    assert script == "train.py"
+    assert script_args == ["--steps", "2"]
+
+
+def test_split_torchrun_command_equals_form_does_not_consume_next():
+    opts, script, script_args = rocm_wrap.split_torchrun_command(
+        ["--nproc-per-node=4", "--standalone", "train.py"]
+    )
+    assert opts == ["--nproc-per-node=4", "--standalone"]
+    assert script == "train.py"
+    assert script_args == []
+
+
+def test_split_torchrun_command_requires_script():
+    import pytest
+
+    with pytest.raises(ValueError):
+        rocm_wrap.split_torchrun_command(["--nproc_per_node", "4"])
+
+
+def test_render_rank_wrapper_embeds_rank_and_script(monkeypatch):
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    text = rocm_wrap.render_rank_wrapper(
+        script="/train/train.py",
+        python_executable="/usr/bin/python3",
+        pmc="/art/pmc.txt",
+        artifact_dir="/art",
+        launch_ts="42",
+    )
+    assert text.startswith("#!/bin/bash")
+    assert 'RANK="${RANK:-${LOCAL_RANK:-0}}"' in text
+    assert "/art/rank$RANK/42" in text
+    assert "rocprof -i /art/pmc.txt --timestamp on -d \"$OUT\"" in text
+    assert "/usr/bin/python3 -u /train/train.py \"$@\"" in text
+
+
+def test_build_torchrun_launch_injects_no_python_and_wrapper(monkeypatch):
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    command, wrapper_path, wrapper_text = rocm_wrap.build_torchrun_launch(
+        ["torchrun", "--nproc_per_node", "4", "train.py", "--steps", "2"],
+        artifact_dir="/art",
+        launch_ts="42",
+        pmc="/art/pmc.txt",
+        python_executable="/usr/bin/python3",
+    )
+    assert command == [
+        "torchrun",
+        "--nproc_per_node",
+        "4",
+        "--no_python",
+        wrapper_path,
+        "--steps",
+        "2",
+    ]
+    assert wrapper_path == os.path.join("/art", rocm_wrap.RANK_WRAPPER_FILENAME)
+    assert "train.py" in wrapper_text

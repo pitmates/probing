@@ -9,9 +9,15 @@ come from the roofline config with defaults.
 Usage::
 
     PROBING_TORCH_ROOFLINE_ARTIFACT_DIR=/path/to/artifacts \
-        probing-roofline -- torchrun --nproc_per_node=1 train.py
+        probing-roofline -- python train.py
 
-or equivalently without installing the console script::
+``torchrun`` / ``python -m torch.distributed.run`` launches are detected
+automatically and wrapped per rank (single-node multi-GPU)::
+
+    PROBING_TORCH_ROOFLINE_ARTIFACT_DIR=/path/to/artifacts \
+        probing-roofline -- torchrun --nproc_per_node=4 train.py
+
+Without installing the console script::
 
     python -m probing.profiling.torch_profiler.rocm_wrap -- torchrun ...
 """
@@ -28,9 +34,41 @@ from typing import Optional, Sequence
 
 from .config import ARTIFACT_DIR_ENV, load_roofline_config
 from .rocm_metrics import ROCM_DEFAULT_METRICS
-from .rocm_runner import sidecar_enabled, wrap_command
+from .rocm_runner import (
+    DEFAULT_ROCM_ROCPROF_CMD,
+    sidecar_command,
+    sidecar_enabled,
+    wrap_command,
+)
 
 DEFAULT_PMC_FILENAME = "rocm_pmc_default.txt"
+RANK_WRAPPER_FILENAME = "rocm_rank_wrap.sh"
+
+# torchrun options that consume a following value. ``--opt=value`` is handled
+# separately because it never consumes the next token. Flag options (for
+# example ``--standalone`` / ``--no_python``) are intentionally absent.
+TORCHRUN_VALUE_OPTIONS = frozenset(
+    {
+        "--nnodes",
+        "--nproc-per-node",
+        "--nproc_per_node",
+        "--rdzv-backend",
+        "--rdzv-endpoint",
+        "--rdzv-id",
+        "--rdzv-conf",
+        "--max-restarts",
+        "--monitor-interval",
+        "--start-method",
+        "--role",
+        "--tee",
+        "--local-addr",
+        "--log-dir",
+        "--redirects",
+        "--master-addr",
+        "--master-port",
+        "--node-rank",
+    }
+)
 
 
 def default_pmc_text(metrics: Sequence[str]) -> str:
@@ -75,6 +113,144 @@ def build_wrapped_command(
     return wrap_command(pmc=pmc_path, output=out_dir, app=app)
 
 
+def is_torchrun_command(tokens: Sequence[str]) -> bool:
+    """Return whether ``tokens`` is a torchrun-style launcher command."""
+    if not tokens:
+        return False
+    head = tokens[0]
+    if os.path.basename(head) == "torchrun":
+        return True
+    return (
+        head in {"python", "python3"}
+        and len(tokens) >= 3
+        and tokens[1] == "-m"
+        and tokens[2] == "torch.distributed.run"
+    )
+
+
+def _strip_torchrun_launcher(
+    tokens: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    """Return ``(launcher_prefix, torchrun_options_and_script)``."""
+    head = tokens[0]
+    if os.path.basename(head) == "torchrun":
+        return [head], list(tokens[1:])
+    if (
+        head in {"python", "python3"}
+        and len(tokens) >= 3
+        and tokens[1] == "-m"
+        and tokens[2] == "torch.distributed.run"
+    ):
+        return list(tokens[:3]), list(tokens[3:])
+    raise ValueError("expected a torchrun or python -m torch.distributed.run command")
+
+
+def split_torchrun_command(
+    tokens: Sequence[str],
+) -> tuple[list[str], str, list[str]]:
+    """Split torchrun args into ``(options, training_script, script_args)``."""
+    opts: list[str] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            i += 1
+            break
+        if token.startswith("-") and token != "-":
+            opts.append(token)
+            if "=" not in token and token in TORCHRUN_VALUE_OPTIONS:
+                i += 1
+                if i < len(tokens):
+                    opts.append(tokens[i])
+        else:
+            break
+        i += 1
+    if i >= len(tokens):
+        raise ValueError("no training script found in torchrun command")
+    return opts, tokens[i], list(tokens[i + 1 :])
+
+
+def render_rank_wrapper(
+    *,
+    script: str,
+    python_executable: str,
+    pmc: str,
+    artifact_dir: str,
+    launch_ts: str,
+) -> str:
+    """Render the per-rank shell wrapper torchrun executes via ``--no_python``."""
+    command = sidecar_command() or DEFAULT_ROCM_ROCPROF_CMD
+    app_ref = f"{shlex.quote(python_executable)} -u {shlex.quote(script)} \"$@\""
+    rocprof_line = (
+        command.replace("{pmc}", shlex.quote(pmc))
+        .replace("{output}", '"$OUT"')
+        .replace("{app}", app_ref)
+    )
+    out_assign = f"OUT={shlex.quote(artifact_dir)}/rank$RANK/{shlex.quote(launch_ts)}"
+    return "\n".join(
+        [
+            "#!/bin/bash",
+            "set -euo pipefail",
+            'RANK="${RANK:-${LOCAL_RANK:-0}}"',
+            out_assign,
+            'mkdir -p "$OUT"',
+            f"exec {rocprof_line}",
+            "",
+        ]
+    )
+
+
+def build_torchrun_launch(
+    app_args: Sequence[str],
+    *,
+    artifact_dir: str,
+    launch_ts: str,
+    pmc: str,
+    python_executable: Optional[str] = None,
+) -> tuple[list[str], str, str]:
+    """Return ``(torchrun_command, wrapper_path, wrapper_text)`` for per-rank wrap."""
+    if not app_args:
+        raise ValueError("no torchrun command supplied after --")
+    launcher, rest = _strip_torchrun_launcher(list(app_args))
+    opts, script, script_args = split_torchrun_command(rest)
+    wrapper_text = render_rank_wrapper(
+        script=script,
+        python_executable=python_executable or sys.executable,
+        pmc=pmc,
+        artifact_dir=artifact_dir,
+        launch_ts=launch_ts,
+    )
+    wrapper_path = os.path.join(artifact_dir, RANK_WRAPPER_FILENAME)
+    command = [*launcher, *opts, "--no_python", wrapper_path, *script_args]
+    return command, wrapper_path, wrapper_text
+
+
+def run_torchrun(
+    app_args: Sequence[str],
+    *,
+    artifact_dir: str,
+    launch_ts: str,
+    pmc: str,
+    dry_run: bool,
+) -> int:
+    """Write the rank wrapper and launch torchrun, or print it for ``--dry-run``."""
+    command, wrapper_path, wrapper_text = build_torchrun_launch(
+        app_args,
+        artifact_dir=artifact_dir,
+        launch_ts=launch_ts,
+        pmc=pmc,
+    )
+    if dry_run:
+        print(f"# rank wrapper: {wrapper_path}", file=sys.stderr)
+        print(wrapper_text, file=sys.stderr)
+        print(shlex.join(command), file=sys.stderr)
+        return 0
+    with open(wrapper_path, "w", encoding="utf-8") as handle:
+        handle.write(wrapper_text)
+    os.chmod(wrapper_path, 0o755)
+    return subprocess.call(command)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="probing-roofline",
@@ -116,34 +292,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     metrics = config.metrics or ROCM_DEFAULT_METRICS
     launch_ts = args.launch_ts or str(int(time.time()))
+    pmc_path = _resolve_pmc(artifact_dir, args.pmc, metrics)
 
     try:
+        if is_torchrun_command(args.app):
+            return run_torchrun(
+                args.app,
+                artifact_dir=artifact_dir,
+                launch_ts=launch_ts,
+                pmc=pmc_path,
+                dry_run=args.dry_run,
+            )
+
         rendered = build_wrapped_command(
             artifact_dir,
             args.rank,
             launch_ts,
             args.app,
-            pmc=args.pmc,
+            pmc=pmc_path,
             metrics=metrics,
         )
+        if rendered is None:
+            print(
+                "rocprof wrapper collection is disabled; set "
+                "PROBING_TORCH_ROOFLINE_CONFIG rocm_enabled=true",
+                file=sys.stderr,
+            )
+            return 2
+        print(rendered, file=sys.stderr)
+        if args.dry_run:
+            return 0
+        return subprocess.call(shlex.split(rendered))
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-
-    if rendered is None:
-        print(
-            "rocprof wrapper collection is disabled; set "
-            "PROBING_TORCH_ROOFLINE_CONFIG rocm_enabled=true",
-            file=sys.stderr,
-        )
-        return 2
-
-    print(rendered, file=sys.stderr)
-    if args.dry_run:
-        return 0
-
-    argv_run = shlex.split(rendered)
-    return subprocess.call(argv_run)
 
 
 if __name__ == "__main__":
