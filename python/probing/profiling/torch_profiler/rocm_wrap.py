@@ -269,6 +269,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("app", nargs=argparse.REMAINDER, help="training command after --")
     args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])
 
+    # argparse.REMAINDER keeps the ``--`` separator; strip it so ``args.app`` is
+    # the actual launcher command (e.g. ``torchrun`` or ``python``).
+    app_args = list(args.app)
+    if app_args and app_args[0] == "--":
+        app_args = app_args[1:]
+
     # The only knob TorchProbe needs to enable this path.
     os.environ.setdefault("PROBING_TORCH_PROFILER_ANALYSIS", "roofline")
 
@@ -296,9 +302,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     pmc_path = _resolve_pmc(artifact_dir, args.pmc, metrics)
 
     try:
-        if is_torchrun_command(args.app):
+        if is_torchrun_command(app_args):
             return run_torchrun(
-                args.app,
+                app_args,
                 artifact_dir=artifact_dir,
                 launch_ts=launch_ts,
                 pmc=pmc_path,
@@ -309,7 +315,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             artifact_dir,
             args.rank,
             launch_ts,
-            args.app,
+            app_args,
             pmc=pmc_path,
             metrics=metrics,
         )

@@ -165,3 +165,18 @@ def test_build_torchrun_launch_injects_no_python_and_wrapper(monkeypatch):
     ]
     assert wrapper_path == os.path.join("/art", rocm_wrap.RANK_WRAPPER_FILENAME)
     assert "train.py" in wrapper_text
+
+
+def test_main_torchrun_dry_run_uses_per_rank_wrapper(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv(rocm_wrap.ARTIFACT_DIR_ENV, str(tmp_path))
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
+
+    code = rocm_wrap.main(
+        ["--dry-run", "--", "torchrun", "--nproc_per_node", "4", "train.py"]
+    )
+    assert code == 0
+    captured = capsys.readouterr().err
+    assert "--no_python" in captured
+    assert rocm_wrap.RANK_WRAPPER_FILENAME in captured
+    assert "rank$RANK" in captured
