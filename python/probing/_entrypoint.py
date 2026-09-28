@@ -63,6 +63,8 @@ def should_activate_probing() -> bool:
 
 def is_lightweight_module() -> bool:
     """``python -m probing.nccl|skills|dev_pth`` must not start the engine."""
+    if current_script_name() == "probing-roofline":
+        return True
     helper_suffixes = (
         "probing/nccl/__main__.py",
         "probing\\nccl\\__main__.py",
@@ -70,6 +72,8 @@ def is_lightweight_module() -> bool:
         "probing\\skills\\__main__.py",
         "probing/dev_pth.py",
         "probing\\dev_pth.py",
+        "probing/profiling/torch_profiler/rocm_wrap.py",
+        "probing\\profiling\\torch_profiler\\rocm_wrap.py",
     )
     if sys.argv and any(sys.argv[0].endswith(s) for s in helper_suffixes):
         return True

@@ -33,3 +33,15 @@ def test_is_elastic_supervisor(argv, env, expected, monkeypatch):
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     assert ep.is_elastic_supervisor() is expected
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["/usr/local/bin/probing-roofline", "--", "torchrun", "train.py"],
+        ["/usr/local/bin/probing-roofline", "--", "python", "train.py"],
+    ],
+)
+def test_is_lightweight_module_for_roofline_cli(argv, monkeypatch):
+    monkeypatch.setattr(sys, "argv", argv)
+    assert ep.is_lightweight_module() is True
