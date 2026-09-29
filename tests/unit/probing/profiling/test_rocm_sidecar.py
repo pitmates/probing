@@ -277,6 +277,93 @@ k,1000,10,,10,20
     assert "TCC_EA_RDREQ" not in rows[0]["metrics"]
 
 
+_ROCPROFV2_HEADER = (
+    "Dispatch_ID,GPU_ID,Queue_ID,Queue_Index,PID,TID,GRD,WGR,LDS,SCR,Arch_VGPR,"
+    "ACCUM_VGPR,SGPR,Wave_Size,SIG,OBJ,Kernel_Name,Start_Timestamp,End_Timestamp,"
+    "Correlation_ID,TCC_EA_RDREQ_32B,TCC_EA_RDREQ,TCC_EA_WRREQ_64B,TCC_EA_WRREQ"
+)
+
+
+def _rocprofv2_row(kernel_name, start, end, counter_cells):
+    prefix = f"1,8,4,96,538818,538818,256,256,19968,480,248,0,112,64,139912466636288,1,{kernel_name},{start},{end},0"
+    cells = ",".join(counter_cells)
+    return prefix + "," + cells
+
+
+def test_parse_counter_csv_sums_replicated_instance_columns():
+    text = (
+        _ROCPROFV2_HEADER
+        + "\n"
+        + _rocprofv2_row(
+            "nccl_kernel",
+            "689065238739419",
+            "689065239343259",
+            ["0.0", "0.0", "0.0", "0.0"] * 8
+            + [
+                "12", "1", "11", "11",
+                "17", "5", "1545", "4",
+                "18", "7", "13", "6",
+                "11", "3", "8", "14",
+                "13", "0", "5", "10",
+                "14", "7", "7", "5",
+                "18", "7", "17", "0",
+                "16", "2", "8", "13",
+                "0", "0", "0", "4",
+                "0", "0", "0", "0",
+                "4", "0", "0", "0",
+                "0", "0", "3", "0",
+                "0", "0", "1", "0",
+                "4", "0", "0", "0",
+                "0", "0", "4", "0",
+                "0", "0", "0", "0",
+                "0", "0", "0", "4",
+                "0", "2", "1", "0",
+                "4", "0", "0", "0",
+                "0", "0", "0", "1",
+                "0", "0", "3", "0",
+                "4", "0", "0", "0",
+                "2", "0", "4", "0",
+                "0", "0", "0", "1",
+            ],
+        )
+        + "\n"
+    )
+    rows = parse_counter_csv(text)
+    assert len(rows) == 1
+    assert rows[0]["kernel_name"] == "nccl_kernel"
+    assert rows[0]["duration_ns"] == 603840
+    assert rows[0]["timestamp_us"] == 689065238739
+    assert rows[0]["metrics"] == {
+        "TCC_EA_RDREQ_32B": 137.0,
+        "TCC_EA_RDREQ": 34.0,
+        "TCC_EA_WRREQ_64B": 1630.0,
+        "TCC_EA_WRREQ": 73.0,
+    }
+
+
+def test_parse_counter_csv_modern_single_instance_uses_timestamps():
+    text = (
+        _ROCPROFV2_HEADER
+        + "\n"
+        + _rocprofv2_row(
+            "single_kernel",
+            "1000000",
+            "2000000",
+            ["10", "15", "10", "20"],
+        )
+        + "\n"
+    )
+    rows = parse_counter_csv(text)
+    assert rows[0]["duration_ns"] == 1000000
+    assert rows[0]["timestamp_us"] == 1000
+    assert rows[0]["metrics"] == {
+        "TCC_EA_RDREQ_32B": 10,
+        "TCC_EA_RDREQ": 15,
+        "TCC_EA_WRREQ_64B": 10,
+        "TCC_EA_WRREQ": 20,
+    }
+
+
 def test_parse_counter_csv_rejects_missing_kernel_column():
     with pytest.raises(ValueError, match="KernelName"):
         parse_counter_csv("DurationNs,TCC_EA_RDREQ\n1,2\n")

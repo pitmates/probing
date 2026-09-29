@@ -34,18 +34,22 @@ JSON format (draft, subject to fixture/E2E validation)::
       ]
     }
 
-CSV format mirrors the legacy rocprof CSV layout::
+CSV supports the legacy rocprof layout::
 
     Index,KernelName,correlation_id,DurationNs,TCC_EA_RDREQ_32B,TCC_EA_RDREQ,TCC_EA_WRREQ_64B,TCC_EA_WRREQ
     0,gemm_kernel,41,12345,10,12,8,16
+
+and the rocprofv2 ``--plugin file`` layout, whose header names each counter
+once but whose data rows repeat the counter block once per hardware instance.
+Those per-instance cells are summed back into a single value per counter, and
+``Start_Timestamp`` / ``End_Timestamp`` (nanoseconds) provide duration and
+timestamp facts.
 
 The first row is the header. A KernelName column is required; correlation_id,
 calls, DurationNs, and an optional op_name column are recognized, and every
 remaining non-metadata column is treated as a numeric counter. Empty or
 non-numeric counter cells are recorded as missing metrics rather than failing
-the whole artifact. The CSV column contract is still draft and must be
-revalidated against a real rocprof sample before it can graduate past
-experimental.
+the whole artifact.
 
 FLOPs are intentionally None until instruction weights are calibrated; only
 DRAM bytes (via rocm_metrics.rocm_dram_bytes) and raw counter values are
@@ -89,11 +93,26 @@ _IGNORED_CSV_COLUMNS = {
     "queue_index",
     "pid",
     "tid",
+    "dispatch_id",
+    "gpu_id",
+    "queue_id",
+    "grd",
+    "wgr",
+    "lds",
+    "scr",
+    "arch_vgpr",
+    "accum_vgpr",
+    "sig",
+    "obj",
+    "start_timestamp",
+    "end_timestamp",
 }
 
 _DURATION_COLUMNS = ("durationns", "duration_ns", "duration", "kernelduration")
 _TIMESTAMP_COLUMNS = ("timestamp", "ts")
 _TIMESTAMP_NS_COLUMNS = ("timestamp_ns", "timestampns")
+_START_TIMESTAMP_COLUMNS = ("start_timestamp", "starttimestamp")
+_END_TIMESTAMP_COLUMNS = ("end_timestamp", "endtimestamp")
 
 
 @dataclass
@@ -283,7 +302,7 @@ def _find_column(headers: list[str], candidates: tuple[str, ...]) -> int | None:
 
 
 def parse_counter_csv(text: str) -> list[dict[str, Any]]:
-    """Parse legacy rocprof-style CSV into normalized per-kernel rows."""
+    """Parse legacy and rocprofv2 counter CSV into normalized rows."""
     if not text.strip():
         return []
     reader = csv.reader(io.StringIO(text))
@@ -301,6 +320,8 @@ def parse_counter_csv(text: str) -> list[dict[str, Any]]:
     calls_column = _find_column(headers, ("calls",))
     timestamp_column = _find_column(headers, _TIMESTAMP_COLUMNS)
     timestamp_ns_column = _find_column(headers, _TIMESTAMP_NS_COLUMNS)
+    start_timestamp_column = _find_column(headers, _START_TIMESTAMP_COLUMNS)
+    end_timestamp_column = _find_column(headers, _END_TIMESTAMP_COLUMNS)
     metadata_columns = {
         kernel_column,
         duration_column,
@@ -309,6 +330,8 @@ def parse_counter_csv(text: str) -> list[dict[str, Any]]:
         calls_column,
         timestamp_column,
         timestamp_ns_column,
+        start_timestamp_column,
+        end_timestamp_column,
     }
     metric_columns = [
         (index, name)
@@ -316,6 +339,26 @@ def parse_counter_csv(text: str) -> list[dict[str, Any]]:
         if index not in metadata_columns
         and name.strip().lower() not in _IGNORED_CSV_COLUMNS
     ]
+
+    # rocprofv2 repeats each configured counter once per hardware instance in
+    # the data rows while the header only names the counter once. Detect that
+    # shape explicitly; legacy artifacts keep one cell per named column.
+    modern_counter_names: list[str] = []
+    counter_start: int | None = None
+    if start_timestamp_column is not None and correlation_column is not None:
+        counter_start = correlation_column + 1
+        for index, name in enumerate(headers[counter_start:], start=counter_start):
+            if name.strip() and name.strip().lower() not in _IGNORED_CSV_COLUMNS:
+                modern_counter_names.append(name.strip())
+        if not modern_counter_names:
+            counter_start = None
+            modern_counter_names = []
+
+    if modern_counter_names:
+        metric_columns = [
+            (counter_start + i, name)
+            for i, name in enumerate(modern_counter_names)
+        ]
     if not metric_columns:
         raise ValueError("rocm CSV has no metric columns")
 
@@ -325,13 +368,41 @@ def parse_counter_csv(text: str) -> list[dict[str, Any]]:
         kernel_name = padded[kernel_column].strip()
         if not kernel_name:
             continue
+
         metrics: dict[str, int | float] = {}
-        for index, name in metric_columns:
-            value = _coerce_number(padded[index])
-            if value is not None:
-                metrics[name] = value
+        if modern_counter_names and counter_start is not None:
+            counter_cells = padded[counter_start:]
+            names_count = len(modern_counter_names)
+            if len(counter_cells) % names_count == 0:
+                for index, cell in enumerate(counter_cells):
+                    value = _coerce_number(cell)
+                    if value is None:
+                        continue
+                    name = modern_counter_names[index % names_count]
+                    metrics[name] = metrics.get(name, 0) + value
+            else:
+                # Non-replicated or truncated tail: match named columns by
+                # position and skip the unaligned remainder rather than
+                # misattributing counters.
+                for offset, name in enumerate(modern_counter_names):
+                    value = _coerce_number(
+                        counter_cells[offset] if offset < len(counter_cells) else ""
+                    )
+                    if value is not None:
+                        metrics[name] = value
+        else:
+            for index, name in metric_columns:
+                value = _coerce_number(padded[index])
+                if value is not None:
+                    metrics[name] = value
+
         duration_ns = None
-        if duration_column is not None:
+        if start_timestamp_column is not None and end_timestamp_column is not None:
+            start_value = _coerce_number(padded[start_timestamp_column])
+            end_value = _coerce_number(padded[end_timestamp_column])
+            if start_value is not None and end_value is not None:
+                duration_ns = max(int(end_value) - int(start_value), 0)
+        elif duration_column is not None:
             duration_ns = _coerce_number(padded[duration_column])
         op_name = padded[op_column].strip() if op_column is not None else ""
         correlation_id = None
@@ -343,7 +414,10 @@ def parse_counter_csv(text: str) -> list[dict[str, Any]]:
             else 1
         )
         timestamp_us = _timestamp_us_from_columns(
-            padded, timestamp_column, timestamp_ns_column
+            padded,
+            timestamp_column,
+            timestamp_ns_column,
+            start_timestamp_column,
         )
         parsed.append(
             {
@@ -425,7 +499,12 @@ def _timestamp_us_from_columns(
     padded: list[str],
     timestamp_column: int | None,
     timestamp_ns_column: int | None,
+    start_timestamp_column: int | None = None,
 ) -> int | None:
+    if start_timestamp_column is not None:
+        start_value = _coerce_number(padded[start_timestamp_column])
+        if start_value is not None and start_value >= 0:
+            return int(start_value // 1000)
     if timestamp_ns_column is not None:
         value = _coerce_number(padded[timestamp_ns_column])
         if value is not None and value >= 0:
