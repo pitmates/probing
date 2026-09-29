@@ -347,6 +347,57 @@ def test_rocm_backend_quality_partial_when_no_roofline_rows(monkeypatch):
     assert result.quality == "partial"
 
 
+def test_rocm_backend_dram_only_roofline_without_flop_calibration(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON",
+        json.dumps(
+            {
+                "backend": "rocm",
+                "device_arch": "gfx936",
+                "peaks": {
+                    "fp16_tensor_dense": {
+                        "peak_flops": 0,
+                        "peak_bytes_per_sec": 10000,
+                    }
+                },
+            }
+        ),
+    )
+    backend = _backend()
+    result = backend.compile_counter_rows(
+        _rocm_document(
+            [
+                {
+                    "kernel_name": "k",
+                    "op_name": "aten::mm",
+                    "duration_ns": 1000000,
+                    "metrics": {
+                        "TCC_EA_RDREQ_32B": 10,
+                        "TCC_EA_RDREQ": 15,
+                        "TCC_EA_WRREQ_64B": 10,
+                        "TCC_EA_WRREQ": 20,
+                    },
+                }
+            ]
+        ),
+        capture_id="c",
+        local_step=1,
+        global_step=1,
+        rank=0,
+        role="",
+    )
+    assert result.quality == "ok"
+    assert len(result.rooflines) == 1
+    row = result.rooflines[0]
+    assert row.flops is None
+    assert row.peak_flops is None
+    assert row.peak_bytes_per_sec == 10000.0
+    assert row.achieved_flops is None
+    assert row.arithmetic_intensity is None
+    assert row.achieved_bytes_per_sec > 0
+    assert row.bottleneck == "memory"
+
+
 def _rocm_document(rows):
     from probing.profiling.torch_profiler.rocm_sidecar import SIDECAR_FORMAT
 

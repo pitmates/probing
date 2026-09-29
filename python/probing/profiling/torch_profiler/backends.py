@@ -450,32 +450,42 @@ class RocmRooflineBackend(RooflineBackend):
         rooflines: list[Any] = []
         quality = "partial"
         error = ""
-        if any(counter.flops is not None for counter in counters):
-            peaks = self.platform_peaks(self.info)
-            if peaks[0] is None or peaks[1] is None:
+        peaks = self.platform_peaks(self.info)
+        has_calibrated_flops = any(counter.flops is not None for counter in counters)
+        has_peak_flops = peaks[0] is not None
+        has_peak_bw = peaks[1] is not None
+        if has_peak_bw:
+            if has_calibrated_flops and not has_peak_flops:
                 error = (
-                    "ROCm FLOP weights are calibrated but platform peaks are "
-                    "missing or uncalibrated; roofline efficiency was not computed"
+                    "ROCm FLOP weights are calibrated but platform peak FLOPs are "
+                    "missing or uncalibrated; DRAM-only efficiency was computed"
                 )
-            else:
-                quality = "ok" if not missing_metrics and not unassociated else "partial"
-                rooflines = _build_rocm_roofline_records(
-                    counters,
-                    peaks=peaks,
-                    quality=quality,
-                    capture_id=capture_id,
-                    local_step=local_step,
-                    global_step=global_step,
-                    rank=rank,
-                    role=role,
-                )
-                if not rooflines:
-                    quality = "partial"
-                    if not error:
-                        error = (
-                            "ROCm counter rows are present but no roofline rows "
-                            "could be derived (missing duration/flops/bytes)"
-                        )
+            if not missing_metrics and not unassociated and (
+                has_peak_flops or not has_calibrated_flops
+            ):
+                quality = "ok"
+            rooflines = _build_rocm_roofline_records(
+                counters,
+                peaks=peaks,
+                quality=quality,
+                capture_id=capture_id,
+                local_step=local_step,
+                global_step=global_step,
+                rank=rank,
+                role=role,
+            )
+            if not rooflines:
+                quality = "partial"
+                if not error:
+                    error = (
+                        "ROCm counter rows are present but no roofline rows "
+                        "could be derived (missing duration/bytes)"
+                    )
+        elif has_calibrated_flops:
+            error = (
+                "ROCm FLOP weights are calibrated but platform peaks are "
+                "missing or uncalibrated; roofline efficiency was not computed"
+            )
         return _RooflineCompileResult(
             counters=counters,
             rooflines=rooflines,
@@ -549,33 +559,44 @@ def _build_rocm_roofline_records(
     from .session_store import RooflineRecord
 
     peak_flops, peak_bytes = peaks
-    if peak_flops is None or peak_bytes is None:
+    if peak_bytes is None:
         return []
     threshold = roofline_balanced_threshold()
     rooflines: list[Any] = []
     for counter in counters:
         if (
-            counter.flops is None
-            or counter.dram_bytes is None
+            counter.dram_bytes is None
             or counter.duration_us is None
             or counter.duration_us <= 0
         ):
             continue
         arithmetic_intensity = (
             counter.flops / counter.dram_bytes
-            if counter.dram_bytes > 0
+            if counter.flops is not None and counter.dram_bytes > 0
             else None
         )
         duration_sec = counter.duration_us / 1_000_000
-        achieved_flops = counter.flops / duration_sec
+        achieved_flops = (
+            counter.flops / duration_sec if counter.flops is not None else None
+        )
         achieved_bytes = counter.dram_bytes / duration_sec
         boundedness: float | None = None
         bottleneck = "unknown"
-        if peak_flops and peak_bytes:
-            compute_eff = achieved_flops / peak_flops
+        if peak_bytes:
+            compute_eff = (
+                achieved_flops / peak_flops
+                if achieved_flops is not None and peak_flops is not None
+                else None
+            )
             memory_eff = achieved_bytes / peak_bytes
-            boundedness = min(compute_eff, memory_eff)
-            if abs(compute_eff - memory_eff) < (1.0 - threshold):
+            boundedness = (
+                min(compute_eff, memory_eff)
+                if compute_eff is not None
+                else memory_eff
+            )
+            if compute_eff is None:
+                bottleneck = "memory"
+            elif abs(compute_eff - memory_eff) < (1.0 - threshold):
                 bottleneck = "balanced"
             elif compute_eff > memory_eff:
                 bottleneck = "compute"

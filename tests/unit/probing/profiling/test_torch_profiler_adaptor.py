@@ -90,6 +90,24 @@ def test_zero_roofline_peaks_are_unavailable(monkeypatch):
     assert roofline_peaks() == (None, None)
 
 
+def test_rocm_dram_only_peaks_allow_missing_flops(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON",
+        '{"backend":"rocm","device_arch":"gfx936","peaks":{"fp16_tensor_dense":{"peak_flops":0,"peak_bytes_per_sec":10000}}}',
+    )
+    assert roofline_peaks("rocm", "gfx936") == (None, 10000.0)
+
+
+def test_rocm_gfx936_builtin_dram_only_bandwidth(monkeypatch):
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCM_PEAKS_JSON", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_PEAKS_JSON", raising=False)
+
+    assert roofline_peaks("rocm", "gfx936:sramecc+:xnack-") == (None, 1.23e12)
+    assert roofline_peaks("rocm", "gfx942") == (None, None)
+    assert roofline_peaks() == (None, None)
+
+
 def test_compile_key_averages_buckets_and_pct(stub_coords):
     events = [
         _FakeEvent("nccl:all_reduce", self_cuda_time_total=300, cuda_time_total=400),

@@ -14,7 +14,7 @@ path to a JSON file::
       "keep_artifacts": false,
       "metrics": ["TCC_EA_RDREQ_32B", "TCC_EA_RDREQ", "TCC_EA_WRREQ_64B", "TCC_EA_WRREQ"],
       "peaks": {"backend": "rocm", "device_arch": "gfx936",
-                "peaks": {"fp16_tensor_dense": {"peak_flops": 312e12, "peak_bytes_per_sec": 1.6e12}}},
+                "peaks": {"fp16_tensor_dense": {"peak_flops": 0, "peak_bytes_per_sec": 1.23e12}}},
       "flop_weights": {"SQ_INSTS_VALU": 2, "SQ_INSTS_SALU": 1}
     }
 

@@ -59,11 +59,12 @@ spec:
           sum(flops) AS total_flops,
           sum(dram_bytes) AS total_dram_bytes,
           sum(flops) / nullif(sum(dram_bytes), 0) AS arithmetic_intensity,
-          sum(flops) * 1e6 / nullif(sum(self_duration_us), 0) AS achieved_flops
+          sum(flops) * 1e6 / nullif(sum(self_duration_us), 0) AS achieved_flops,
+          sum(dram_bytes) * 1e6 / nullif(sum(self_duration_us), 0) AS achieved_bw
         FROM python.profile_roofline
         WHERE capture_id IN (SELECT capture_id FROM latest_capture)
         GROUP BY op_name
-        ORDER BY total_flops DESC
+        ORDER BY coalesce(total_flops, total_dram_bytes) DESC
         LIMIT {operator_limit}
       on_empty: warn
       empty_message: "最新 capture 没有 roofline 行"
@@ -111,7 +112,8 @@ spec:
           op_name,
           count(*) AS rows,
           sum(flops) AS total_flops,
-          sum(dram_bytes) AS total_dram_bytes
+          sum(dram_bytes) AS total_dram_bytes,
+          sum(dram_bytes) * 1e6 / nullif(sum(self_duration_us), 0) AS achieved_bw
         FROM python.profile_roofline
         WHERE capture_id IN (SELECT capture_id FROM latest_capture)
           AND data_quality = 'ok'

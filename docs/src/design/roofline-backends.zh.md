@@ -115,6 +115,7 @@ rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
 - probing 进程内 collector 用 `rocm_sidecar.parse_counter_artifact()` 解析 artifact，产出 `python.profile_counter` 事实行，`flops` 保持 `NULL`。v1 的真实 rocprof 输出是裸 CSV（走 `parse_counter_csv`）；JSON 分支要求 `format=probing-rocm-sidecar-v1` envelope，目前只用于本库 fixture 与 parity 测试，不代表裸 rocprof JSON 可直接 import。
 - 再在进程内用 `join_rocm_rows_with_timeline()` 把 counter 行与当次 capture 的 Kineto `profiler.events()`（`timeline_events`）关联：优先 `correlation_id`，缺失时按时间戳回退，得到 `op_stack`。
 - 随后用 `rocm_metrics` 换算 DRAM bytes（`TCC_EA_*`）与 FLOPs（`SQ_INSTS_*`，未校准为 `NULL`），写 `python.profile_roofline`。
+- DRAM-only：默认仅采 4 个 DRAM 计数器，`flops` 全 `NULL` 时仍按“访存效率行”写 `profile_roofline`（`achieved_bytes_per_sec` / `peak_bytes_per_sec`，`bottleneck=memory`，`arithmetic_intensity` / `achieved_flops` / `peak_flops` 为 `NULL`）；此路径只需标定峰值带宽，无需指令计数。
 - 职责边界：`parse_counter_artifact()` 只做 artifact 规范化；kernel→op 关联由 collector 内的 `join_rocm_rows_with_timeline()` 完成，落库后不再二次 SQL JOIN。`python.torch_trace` 是 TorchProbe 的模块级采样表，不是 Kineto kernel timeline，不参与本关联。
 
 **step 切片**
@@ -134,7 +135,7 @@ rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
 | 场景 | `profile/start` | `capture.status` | `roofline_quality` | `profile_roofline` | `capture_id` |
 | --- | --- | --- | --- | --- | --- |
 | artifact 就绪且已校准 | `success=true` | `completed` | `ok`（无 `missing_metrics` / `unassociated`） | 有值 | 有值 |
-| artifact 就绪但未校准（`flops` 全 `NULL`） | `success=true` | `completed` | `partial` | 空 | 有值 |
+| artifact 就绪但未校准（DRAM-only，`flops` 全 `NULL`） | `success=true` | `completed` | `ok`（有峰值带宽且无 `missing_metrics`/`unassociated`） / `partial` | 有值（仅访存效率） | 有值 |
 | artifact 缺失 / 解析失败 | `success=true` | `completed`（`error` 附原因） | `unavailable` | 空 | 有值 |
 | start 阶段失败（窗口未建立） | `success=false` | 无 capture 行 | — | — | 空 |
 | 窗口已建、finalize / `__exit__` 失败 | `success=true` | `failed` | `unavailable`（按失败点） | 空 | 有值 |
@@ -180,7 +181,7 @@ rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
 
 ## 7. 峰值配置
 
-现有 `PROBING_TORCH_ROOFLINE_PEAKS_JSON` 只支持 `fp16_tensor_dense`。扩展为 vendor / arch / precision 可解析结构；`gfx936` 先使用占位值，待 DCU 规格确认后填入。
+现有 `PROBING_TORCH_ROOFLINE_PEAKS_JSON` 只支持 `fp16_tensor_dense`。扩展为 vendor / arch / precision 可解析结构；`gfx936` 内置默认峰值带宽 `1.23e12` B/s（公开同栈实测约 1230 GB/s），可被 `PROBING_TORCH_ROOFLINE_CONFIG.peaks` 覆盖，待 DCU 规格或实机复测确认。
 
 ```json
 {
@@ -189,7 +190,7 @@ rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
   "peaks": {
     "fp16_tensor_dense": {
       "peak_flops": 0,
-      "peak_bytes_per_sec": 0
+      "peak_bytes_per_sec": 1.23e12
     }
   }
 }

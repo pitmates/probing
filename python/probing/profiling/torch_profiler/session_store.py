@@ -9,6 +9,9 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+ROCM_GFX936_DEFAULT_PEAK_BYTES_PER_SEC = 1.23e12
+
+
 def _max_sessions() -> int:
     raw = os.environ.get("PROBING_TORCH_PROFILER_MAX_SESSIONS", "8").strip()
     try:
@@ -236,6 +239,8 @@ def roofline_peaks(
         else:
             raw = os.environ.get("PROBING_TORCH_ROOFLINE_PEAKS_JSON", "").strip()
         if not raw:
+            if backend == "rocm" and device_arch and device_arch.startswith("gfx936"):
+                return None, ROCM_GFX936_DEFAULT_PEAK_BYTES_PER_SEC
             return None, None
         try:
             parsed = json.loads(raw)
@@ -261,20 +266,26 @@ def roofline_peaks(
             raise ValueError("peaks JSON missing fp16_tensor_dense")
         peak_flops = entry.get("peak_flops")
         peak_bytes = entry.get("peak_bytes_per_sec")
-        if not isinstance(peak_flops, (int, float)) or not isinstance(
-            peak_bytes, (int, float)
-        ):
-            raise ValueError("peaks must be numbers")
-        if peak_flops == 0 or peak_bytes == 0:
+        if peak_flops is not None and not isinstance(peak_flops, (int, float)):
+            raise ValueError("peak_flops must be a number")
+        if not isinstance(peak_bytes, (int, float)):
+            raise ValueError("peak_bytes_per_sec must be a number")
+        if (peak_flops is not None and peak_flops < 0) or peak_bytes < 0:
+            raise ValueError("peaks must be non-negative numbers")
+        if peak_bytes == 0:
             import logging
 
             logging.getLogger(__name__).debug(
-                "roofline peaks are uncalibrated (zero); treating as unavailable"
+                "roofline peak bandwidth is uncalibrated (zero); treating as unavailable"
             )
             return None, None
-        if peak_flops < 0 or peak_bytes < 0:
-            raise ValueError("peaks must be non-negative numbers")
-        return float(peak_flops), float(peak_bytes)
+        flops = float(peak_flops) if peak_flops else None
+        bandwidth = float(peak_bytes)
+        if backend != "rocm" and flops is None:
+            # CUDA v1 requires both calibrated peaks before an efficiency row can
+            # be produced; ROCm v1 supports a DRAM-only roofline.
+            return None, None
+        return flops, bandwidth
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         import logging
 
