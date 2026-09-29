@@ -58,6 +58,8 @@ from __future__ import annotations
 import csv
 import io
 import json
+from bisect import bisect_right
+from dataclasses import dataclass
 from typing import Any
 
 from .rocm_metrics import (
@@ -67,7 +69,7 @@ from .rocm_metrics import (
     rocm_instruction_flops,
     rocm_missing_metrics,
 )
-from .session_store import CounterRecord
+from .session_store import CounterRecord, RooflineRecord
 
 SIDECAR_FORMAT = "probing-rocm-sidecar-v1"
 
@@ -92,6 +94,163 @@ _IGNORED_CSV_COLUMNS = {
 _DURATION_COLUMNS = ("durationns", "duration_ns", "duration", "kernelduration")
 _TIMESTAMP_COLUMNS = ("timestamp", "ts")
 _TIMESTAMP_NS_COLUMNS = ("timestamp_ns", "timestampns")
+
+
+@dataclass
+class _RooflineCompileResult:
+    counters: list[CounterRecord]
+    rooflines: list[RooflineRecord]
+    quality: str
+    counter_events: int
+    associated_kernels: int
+    unassociated_kernels: int
+    missing_metrics: list[str]
+    error: str = ""
+
+
+def _timeline_event_args(event: Any) -> dict[str, Any]:
+    if isinstance(event, dict):
+        args = event.get("args")
+        return dict(args) if isinstance(args, dict) else {}
+    args = getattr(event, "args", None)
+    return args if isinstance(args, dict) else {}
+
+
+def _timeline_event_name(event: Any) -> str:
+    if isinstance(event, dict):
+        for key in ("name", "key"):
+            value = event.get(key)
+            if value:
+                return str(value)
+        return "unknown"
+    for attr in ("key", "name"):
+        value = getattr(event, attr, None)
+        if value:
+            return str(value)
+    return "unknown"
+
+
+def _timeline_event_external_id(event: Any) -> int | None:
+    value = _timeline_event_args(event).get("External id")
+    if value is None and isinstance(event, dict):
+        value = event.get("external_id")
+    if value is None:
+        value = getattr(event, "external_id", None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _timeline_event_timestamp_us(event: Any) -> int | None:
+    if isinstance(event, dict):
+        candidates = (
+            event.get("ts"),
+            event.get("timestamp_us"),
+            event.get("start_time"),
+        )
+    else:
+        candidates = (
+            getattr(getattr(event, "time_range", None), "start", None),
+            getattr(event, "start_us", None),
+            getattr(event, "start_time", None),
+            getattr(event, "timestamp_us", None),
+            _timeline_event_args(event).get("ts"),
+        )
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _timeline_cpu_op_name(event: Any) -> str | None:
+    name = _timeline_event_name(event)
+    return name if name.startswith(("aten::", "autograd::")) else None
+
+
+def _timeline_event_op_stack(event: Any, op_name: str) -> tuple[str, ...]:
+    if isinstance(event, dict):
+        stack = event.get("stack")
+    else:
+        stack = getattr(event, "stack", None)
+    names: list[str] = []
+    if stack is not None:
+        for frame in stack:
+            if isinstance(frame, str):
+                frame_name = frame
+            elif isinstance(frame, dict):
+                frame_name = frame.get("name") or frame.get("key") or ""
+            else:
+                frame_name = _timeline_event_name(frame)
+            if frame_name:
+                names.append(str(frame_name))
+    stack = tuple(names) if names else ()
+    if op_name not in stack:
+        stack = (*stack, op_name)
+    return stack
+
+
+def join_rocm_rows_with_timeline(
+    rows: list[dict[str, Any]], timeline_events: list[Any]
+) -> list[dict[str, Any]]:
+    """Associate ROCm counter rows with Kineto CPU ops.
+
+    Preference order matches ``roofline-backends.zh.md``: keep an explicit
+    ``op_name``, otherwise match by ``correlation_id``, and finally fall back
+    to the nearest preceding CPU launch by timestamp. Rows are mutated in
+    place and returned.
+    """
+    cpu_by_external_id: dict[int, list[tuple[str, ...]]] = {}
+    launch_stack_by_timestamp: list[tuple[int, tuple[str, ...]]] = []
+    for event in timeline_events or []:
+        op_name = _timeline_cpu_op_name(event)
+        if op_name is None:
+            continue
+        stack = _timeline_event_op_stack(event, op_name)
+        external_id = _timeline_event_external_id(event)
+        timestamp = _timeline_event_timestamp_us(event)
+        if external_id is not None:
+            cpu_by_external_id.setdefault(external_id, []).append(tuple(stack))
+        if timestamp is not None:
+            launch_stack_by_timestamp.append((timestamp, tuple(stack)))
+
+    launch_stack_by_timestamp.sort(key=lambda item: item[0])
+    timestamps = [item[0] for item in launch_stack_by_timestamp]
+    for row in rows:
+        if row.get("op_name"):
+            continue
+        stack: tuple[str, ...] | None = None
+        correlation_id = row.get("correlation_id")
+        if correlation_id is not None:
+            try:
+                correlation_id = int(correlation_id)
+            except (TypeError, ValueError):
+                correlation_id = None
+        if correlation_id is not None:
+            stacks = cpu_by_external_id.get(correlation_id)
+            if stacks:
+                stack = stacks[-1]
+        if stack is None and timestamps:
+            row_timestamp = row.get("timestamp_us")
+            if row_timestamp is not None:
+                try:
+                    row_timestamp = int(row_timestamp)
+                except (TypeError, ValueError):
+                    row_timestamp = None
+                if row_timestamp is not None:
+                    position = bisect_right(timestamps, row_timestamp)
+                    if position:
+                        stack = launch_stack_by_timestamp[position - 1][1]
+        if stack:
+            row["op_name"] = stack[-1]
+            row["op_stack"] = list(stack)
+    return rows
 
 
 def _coerce_number(value: str) -> int | float | None:

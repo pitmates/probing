@@ -105,10 +105,10 @@ v1 采用两段式模型，采集与统计解耦。
 rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
 ```
 
-- `{pmc}` 为仅含 DRAM 四计数器与 `SQ_INSTS_*` 的 metric 文件；launcher 渲染时令 `{output}={artifact_dir}/rank{rank}/{launch_ts}`，与 offline import 的发现规则一致。`--plugin file` 输出 counter 文件；时间戳列名随 DTK 版本变化，供后续关联与切片。
+- `{pmc}` 默认为仅含 DRAM 四计数器的 metric 文件；`SQ_INSTS_*` 指令计数通过 `probing-roofline --with-instruction-counters` 显式启用，避免默认全程采集的 kernel replay 开销。launcher 渲染时令 `{output}={artifact_dir}/rank{rank}/{launch_ts}`，与 offline import 的发现规则一致。`--plugin file` 输出 counter 文件；时间戳列名随 DTK 版本变化，供后续关联与切片。
 - v1 先单卡单进程验证 `rocprofv2 -i pmc.txt --plugin file -d out python bench.py`；单机多卡 `torchrun` 由 `probing-roofline` 自动识别并逐 rank 包裹（`--no_python` + 生成的 rank wrapper），每个 rank 写 `{artifact_dir}/rank{rank}/{launch_ts}`。多机多卡的注入层级仍见 Phase 5b 待真机验证。
 - 模板渲染必须走参数列表或 `shlex.quote`，禁止把 `{pmc}`/`{output}`/`{app}` 直接字符串拼接；路径或训练命令可能含空格/引号。
-- 单命令启动入口：新增 `probing-roofline`（或 `python -m probing.profiling.torch_profiler.rocm_wrap`）——内部按 `ROCM_DEFAULT_METRICS` 生成默认 `pmc`、按 `{artifact_dir}/rank{rank}/{launch_ts}` 拼好 `-d`，并自动置 `PROBING_TORCH_PROFILER_ANALYSIS=roofline`；用户只需把训练命令放在 `--` 之后。`--dry-run` 只打印渲染结果不执行。
+- 单命令启动入口：新增 `probing-roofline`（或 `python -m probing.profiling.torch_profiler.rocm_wrap`）——内部按 `ROCM_DEFAULT_METRICS` 生成默认 DRAM-only `pmc`、按 `{artifact_dir}/rank{rank}/{launch_ts}` 拼好 `-d`，并自动置 `PROBING_TORCH_PROFILER_ANALYSIS=roofline`；用户只需把训练命令放在 `--` 之后。`--steps N` 将替换/追加训练脚本的 `--steps` 以缩短采集窗口（要求脚本支持该参数）。`--dry-run` 只打印渲染结果不执行。
 
 **统计期（offline import）**
 
@@ -213,7 +213,7 @@ rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
   - `PROBING_TORCH_ROOFLINE_ROCM_PROFILE=0|1`（wrapper 采集开关；旧名 sidecar 保留兼容，新版默认开启）
   - `PROBING_TORCH_ROOFLINE_ARTIFACT_DIR` / `PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS` / `PROBING_TORCH_ROOFLINE_FINALIZED`（offline import 目录 / 保留现场 / 采集完成门控）
   - `PROBING_TORCH_PROFILER_CLUSTER_FANOUT=0|1`（`profile/start` 按 rank fan-out）
-- 新增 CLI：`probing-roofline` console script（`python -m probing.profiling.torch_profiler.rocm_wrap` 亦可），参数仅 `--rank` / `--launch-ts` / `--pmc` / `--dry-run`，训练命令放在 `--` 之后；`--pmc` 缺省自动生成。
+- 新增 CLI：`probing-roofline` console script（`python -m probing.profiling.torch_profiler.rocm_wrap` 亦可），参数为 `--rank` / `--launch-ts` / `--pmc` / `--steps` / `--with-instruction-counters` / `--dry-run`，训练命令放在 `--` 之后；`--pmc` 缺省自动生成。
 - 同步更新 `env-vars`、`sql-tables`、`semantic_catalog` 和 `operator_roofline` skill。
 
 ## 9. 多 rank

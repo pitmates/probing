@@ -18,6 +18,7 @@ from typing import Any, Optional
 from .rocm_metrics import ROCM_DEFAULT_METRICS
 from .rocm_runner import sidecar_command, sidecar_enabled
 from .config import load_roofline_config
+from .rocm_sidecar import _RooflineCompileResult, join_rocm_rows_with_timeline
 
 ROCM_PROBE_CMD_ENV = "PROBING_TORCH_ROOFLINE_ROCPROF_PROBE_CMD"
 
@@ -396,10 +397,6 @@ class RocmRooflineBackend(RooflineBackend):
         role: str,
         timeline_events: Any = None,
     ) -> Any:
-        from .adaptor import (
-            _RooflineCompileResult,
-            join_rocm_rows_with_timeline,
-        )
         from .rocm_sidecar import build_counter_records, parse_counter_artifact
 
         if not raw_events:
@@ -523,7 +520,6 @@ class UnavailableRooflineBackend(RooflineBackend):
         timeline_events: Any = None,
     ) -> Any:
         del raw_events, capture_id, local_step, global_step, rank, role, timeline_events
-        from .adaptor import _RooflineCompileResult
 
         return _RooflineCompileResult(
             counters=[],
@@ -549,13 +545,13 @@ def _build_rocm_roofline_records(
     role: str,
 ) -> list[Any]:
     """Derive ROCm roofline efficiency rows only when calibration is present."""
-    from .adaptor import _balanced_threshold
+    from .rocm_metrics import roofline_balanced_threshold
     from .session_store import RooflineRecord
 
     peak_flops, peak_bytes = peaks
     if peak_flops is None or peak_bytes is None:
         return []
-    threshold = _balanced_threshold()
+    threshold = roofline_balanced_threshold()
     rooflines: list[Any] = []
     for counter in counters:
         if (

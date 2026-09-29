@@ -13,15 +13,11 @@ import os
 from typing import Mapping
 
 
-ROCM_DEFAULT_METRICS: tuple[str, ...] = (
+ROCM_INSTRUCTION_METRICS: tuple[str, ...] = (
     "SQ_INSTS_VALU",
     "SQ_INSTS_SALU",
     "SQ_INSTS_VMEM_WR",
     "SQ_INSTS_VMEM_RD",
-    "TCC_EA_RDREQ_32B",
-    "TCC_EA_WRREQ_64B",
-    "TCC_EA_RDREQ",
-    "TCC_EA_WRREQ",
 )
 
 _READ_32B = "TCC_EA_RDREQ_32B"
@@ -37,6 +33,20 @@ ROCM_DRAM_METRICS: tuple[str, ...] = (
     _WRITE_64B,
     _WRITE_TOTAL,
 )
+
+ROCM_DEFAULT_METRICS: tuple[str, ...] = ROCM_DRAM_METRICS
+
+
+def roofline_balanced_threshold() -> float:
+    """Return the compute/memory balance threshold used by roofline rows."""
+    raw = os.environ.get("PROBING_TORCH_ROOFLINE_BALANCED_THRESHOLD", "0.9").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.9
+    if value <= 0.0 or value >= 1.0:
+        return 0.9
+    return value
 
 
 def _nonnegative(value: int | float | None) -> int | None:

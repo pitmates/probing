@@ -16,6 +16,42 @@ def test_default_pmc_text_lists_metrics():
     assert text == "pmc: A B\n"
 
 
+def test_apply_steps_arg_appends_when_missing():
+    assert rocm_wrap.apply_steps_arg(["python", "train.py"], 20) == [
+        "python",
+        "train.py",
+        "--steps",
+        "20",
+    ]
+
+
+def test_apply_steps_arg_replaces_existing_value():
+    assert rocm_wrap.apply_steps_arg(
+        ["torchrun", "--nproc_per_node", "4", "train.py", "--steps", "500"],
+        20,
+    ) == [
+        "torchrun",
+        "--nproc_per_node",
+        "4",
+        "train.py",
+        "--steps",
+        "20",
+    ]
+
+
+def test_apply_steps_arg_replaces_equals_form():
+    assert rocm_wrap.apply_steps_arg(["python", "train.py", "--steps=500"], 20) == [
+        "python",
+        "train.py",
+        "--steps=20",
+    ]
+
+
+def test_apply_steps_arg_ignores_nonpositive():
+    tokens = ["python", "train.py", "--steps", "500"]
+    assert rocm_wrap.apply_steps_arg(tokens, 0) == tokens
+
+
 def test_output_dir_uses_rank_and_launch_ts():
     assert rocm_wrap.output_dir("/art", 3, "123") == os.path.join(
         "/art", "rank3", "123"

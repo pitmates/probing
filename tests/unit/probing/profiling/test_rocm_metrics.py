@@ -5,11 +5,20 @@ from __future__ import annotations
 import json
 
 from probing.profiling.torch_profiler.rocm_metrics import (
+    ROCM_DEFAULT_METRICS,
+    ROCM_DRAM_METRICS,
+    ROCM_INSTRUCTION_METRICS,
     rocm_dram_bytes,
     rocm_flop_weights,
     rocm_instruction_flops,
     rocm_missing_metrics,
 )
+
+
+def test_default_metrics_are_dram_only():
+    assert ROCM_DEFAULT_METRICS == ROCM_DRAM_METRICS
+    assert all(name.startswith("TCC_EA_") for name in ROCM_DEFAULT_METRICS)
+    assert any(name.startswith("SQ_INSTS_") for name in ROCM_INSTRUCTION_METRICS)
 
 
 def test_rocm_dram_bytes_converts_read_and_write_requests():

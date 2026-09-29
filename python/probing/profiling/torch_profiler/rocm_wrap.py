@@ -11,6 +11,16 @@ Usage::
     PROBING_TORCH_ROOFLINE_ARTIFACT_DIR=/path/to/artifacts \
         probing-roofline -- python train.py
 
+Short collection window (requires the training script to honor ``--steps``)::
+
+    PROBING_TORCH_ROOFLINE_ARTIFACT_DIR=/path/to/artifacts \
+        probing-roofline --steps 20 -- python train.py --steps 500
+
+Instruction counters are opt-in; the default metric set is DRAM-only::
+
+    PROBING_TORCH_ROOFLINE_ARTIFACT_DIR=/path/to/artifacts \
+        probing-roofline --with-instruction-counters -- python train.py
+
 ``torchrun`` / ``python -m torch.distributed.run`` launches are detected
 automatically and wrapped per rank (single-node multi-GPU)::
 
@@ -33,7 +43,7 @@ import time
 from typing import Optional, Sequence
 
 from .config import ARTIFACT_DIR_ENV, load_roofline_config
-from .rocm_metrics import ROCM_DEFAULT_METRICS
+from .rocm_metrics import ROCM_DEFAULT_METRICS, ROCM_INSTRUCTION_METRICS
 from .rocm_runner import (
     DEFAULT_ROCM_ROCPROF_CMD,
     sidecar_command,
@@ -80,6 +90,38 @@ def default_pmc_text(metrics: Sequence[str]) -> str:
 def output_dir(artifact_dir: str, rank: int, launch_ts: str) -> str:
     """Return the per-rank launch output directory used by offline import."""
     return os.path.join(artifact_dir, f"rank{rank}", launch_ts)
+
+
+def apply_steps_arg(app_args: Sequence[str], steps: int) -> list[str]:
+    """Return ``app_args`` with ``--steps <steps>`` replaced or appended.
+
+    The wrapper cannot stop ``rocprof`` mid-run; it relies on the wrapped
+    training script honoring ``--steps`` so collection ends after a short
+    window. Existing ``--steps`` and ``--steps=<value>`` arguments are
+    replaced, otherwise the flag is appended.
+    """
+    tokens = list(app_args)
+    if steps <= 0:
+        return tokens
+    result: list[str] = []
+    replaced = False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--steps":
+            result.extend(["--steps", str(steps)])
+            index += 2
+            replaced = True
+        elif token.startswith("--steps="):
+            result.append(f"--steps={steps}")
+            index += 1
+            replaced = True
+        else:
+            result.append(token)
+            index += 1
+    if not replaced:
+        result.extend(["--steps", str(steps)])
+    return result
 
 
 def _resolve_pmc(
@@ -262,6 +304,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--launch-ts", default="", help="launch timestamp directory (default: epoch seconds)")
     parser.add_argument("--pmc", default="", help="rocprof -i counter file (default: generated from configured metrics)")
     parser.add_argument(
+        "--steps",
+        type=int,
+        default=0,
+        help="replace/append --steps N on the training command to shorten collection",
+    )
+    parser.add_argument(
+        "--with-instruction-counters",
+        action="store_true",
+        help="add SQ_INSTS_* instruction counters to the default DRAM metric set",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the rendered rocprof wrapper and exit without running it",
@@ -274,6 +327,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     app_args = list(args.app)
     if app_args and app_args[0] == "--":
         app_args = app_args[1:]
+    if args.steps > 0:
+        app_args = apply_steps_arg(app_args, args.steps)
 
     # The only knob TorchProbe needs to enable this path.
     os.environ.setdefault("PROBING_TORCH_PROFILER_ANALYSIS", "roofline")
@@ -298,6 +353,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     metrics = config.metrics or ROCM_DEFAULT_METRICS
+    if args.with_instruction_counters:
+        metrics = tuple(dict.fromkeys((*metrics, *ROC_M_INSTRUCTION_METRICS)))
     launch_ts = args.launch_ts or str(int(time.time()))
     pmc_path = _resolve_pmc(artifact_dir, args.pmc, metrics)
 
