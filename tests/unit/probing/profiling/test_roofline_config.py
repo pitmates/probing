@@ -82,6 +82,34 @@ def test_artifact_dir_and_keep_artifacts_from_config(monkeypatch):
     assert config.finalized is True
 
 
+def test_dispatch_cap_and_flush_interval_from_config(monkeypatch):
+    monkeypatch.setenv(
+        CONFIG_ENV,
+        json.dumps({"dispatch_cap": 123, "flush_interval_ms": 45}),
+    )
+    config = load_roofline_config()
+    assert config.dispatch_cap == 123
+    assert config.flush_interval_ms == 45
+
+
+def test_dispatch_cap_and_flush_interval_env_fallback(monkeypatch):
+    monkeypatch.delenv(CONFIG_ENV, raising=False)
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_DISPATCH_CAP", "321")
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_FLUSH_INTERVAL_MS", "500")
+    config = load_roofline_config()
+    assert config.dispatch_cap == 321
+    assert config.flush_interval_ms == 500
+
+
+def test_dispatch_cap_and_flush_interval_defaults(monkeypatch):
+    monkeypatch.delenv(CONFIG_ENV, raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_DISPATCH_CAP", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_FLUSH_INTERVAL_MS", raising=False)
+    config = load_roofline_config()
+    assert config.dispatch_cap == 2000
+    assert config.flush_interval_ms == 1000
+
+
 def test_artifact_dir_env_fallback(monkeypatch):
     monkeypatch.delenv(CONFIG_ENV, raising=False)
     monkeypatch.setenv("PROBING_TORCH_ROOFLINE_ARTIFACT_DIR", "/env/artifacts")

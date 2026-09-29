@@ -9,7 +9,8 @@ pipeline in two:
   ``rocprofv2 -i {pmc} --plugin file -d {artifact_dir}/rank{rank}/{launch_ts} <app>``
 
   around the training process, producing per-rank counter artifacts for the
-  entire run.
+  run. The wrapper template renders ``--flush-interval <ms>`` by default so
+  counter buffers are flushed in batches instead of once per dispatch.
 
 * The in-process collector calls ``import_artifact_rows()`` at finalize to find
   the newest artifact under the configured directory, parse it with
@@ -61,16 +62,51 @@ def sidecar_command() -> Optional[str]:
     return DEFAULT_ROCM_ROCPROF_CMD
 
 
+def inject_flush_interval(
+    command: str,
+    flush_interval_ms: Optional[int],
+) -> str:
+    """Insert ``--flush-interval`` before ``{app}`` when enabled.
+
+    ``rocprofv2`` flushes its counter buffer on a timer as well as when the
+    buffer fills. Batching those flushes avoids a per-dispatch/per-step write
+    that otherwise makes whole-run collection progressively slower. The flag
+    is injected before the application placeholder only for ``rocprofv2``
+    templates; legacy ``rocprof`` v1 commands use a different flag and are
+    left untouched.
+    """
+    flush_interval_ms = _configured_flush_interval_ms(flush_interval_ms)
+    if (
+        not flush_interval_ms
+        or "rocprofv2" not in command
+        or "--flush-interval" in command
+    ):
+        return command
+    insertion = f"--flush-interval {int(flush_interval_ms)}"
+    if "{app}" in command:
+        return command.replace("{app}", f"{insertion} {{app}}")
+    return f"{command.rstrip()} {insertion}"
+
+
+def _configured_flush_interval_ms(value: Optional[int]) -> Optional[int]:
+    if value is not None:
+        return value
+    return load_roofline_config().flush_interval_ms
+
+
 def wrap_command(
     *,
     pmc: Optional[str] = None,
     output: Optional[str] = None,
     app: Optional[str] = None,
+    flush_interval_ms: Optional[int] = None,
 ) -> Optional[str]:
     """Render the wrapper template with shell-quoted replacements.
 
     Unset placeholders are left in the template so callers can dry-run partial
-    renders for documentation or diagnostics.
+    renders for documentation or diagnostics. When ``flush_interval_ms`` is
+    unset, the configured default is injected before ``{app}``; pass ``0`` to
+    render a command without the interval.
     """
     command = sidecar_command()
     if command is None:
@@ -79,10 +115,12 @@ def wrap_command(
     for placeholder, value in (
         ("{pmc}", pmc),
         ("{output}", output),
-        ("{app}", app),
     ):
         if value is not None:
             rendered = rendered.replace(placeholder, shlex.quote(value))
+    rendered = inject_flush_interval(rendered, flush_interval_ms)
+    if app is not None:
+        rendered = rendered.replace("{app}", shlex.quote(app))
     return rendered
 
 

@@ -4,7 +4,13 @@ DTK ``rocprof`` / ``rocprofv2`` cannot attach to a running process, so the
 operator has to wrap the training launch command. This entry point collapses
 that wrapping into one command: the only thing the user supplies is the
 training command itself. The metrics file, output directory, and rank mapping
-come from the roofline config with defaults.
+come from the roofline config with defaults. By default the generated
+``-i`` counter file adds ``range: 0:<dispatch_cap>`` (2000) and the command
+injects ``--flush-interval <ms>`` (1000), bounding whole-run collection to the
+first dispatches instead of writing one counter row per kernel for the entire
+run. Set the ``dispatch_cap`` / ``flush_interval_ms`` keys in
+``PROBING_TORCH_ROOFLINE_CONFIG`` to tune, or ``dispatch_cap=0`` to collect the
+whole run.
 
 Usage::
 
@@ -46,6 +52,7 @@ from .config import ARTIFACT_DIR_ENV, load_roofline_config
 from .rocm_metrics import ROCM_DEFAULT_METRICS, ROCM_INSTRUCTION_METRICS
 from .rocm_runner import (
     DEFAULT_ROCM_ROCPROF_CMD,
+    inject_flush_interval,
     sidecar_command,
     sidecar_enabled,
     wrap_command,
@@ -82,9 +89,23 @@ TORCHRUN_VALUE_OPTIONS = frozenset(
 )
 
 
-def default_pmc_text(metrics: Sequence[str]) -> str:
-    """Render the ``rocprof -i`` counter file for a metric list."""
-    return "pmc: " + " ".join(metrics) + "\n"
+def default_pmc_text(
+    metrics: Sequence[str], dispatch_cap: Optional[int] = None
+) -> str:
+    """Render the ``rocprof -i`` counter file for a metric list.
+
+    ``dispatch_cap`` bounds the number of kernel dispatches recorded by adding
+    one ``range: 0:<cap>`` line. The input file keeps exactly one ``pmc:`` row,
+    so the counters are still collected in a single hardware pass; the range
+    only suppresses counter rows for later dispatches. A non-positive value
+    disables the cap.
+    """
+    if dispatch_cap is None:
+        dispatch_cap = load_roofline_config().dispatch_cap
+    lines = ["pmc: " + " ".join(metrics)]
+    if dispatch_cap and dispatch_cap > 0:
+        lines.append(f"range: 0:{int(dispatch_cap)}")
+    return "\n".join(lines) + "\n"
 
 
 def output_dir(artifact_dir: str, rank: int, launch_ts: str) -> str:
@@ -125,14 +146,17 @@ def apply_steps_arg(app_args: Sequence[str], steps: int) -> list[str]:
 
 
 def _resolve_pmc(
-    artifact_dir: str, pmc_override: str, metrics: Sequence[str]
+    artifact_dir: str,
+    pmc_override: str,
+    metrics: Sequence[str],
+    dispatch_cap: Optional[int] = None,
 ) -> str:
     if pmc_override:
         return pmc_override
     os.makedirs(artifact_dir, exist_ok=True)
     path = os.path.join(artifact_dir, DEFAULT_PMC_FILENAME)
     with open(path, "w", encoding="utf-8") as handle:
-        handle.write(default_pmc_text(metrics))
+        handle.write(default_pmc_text(metrics, dispatch_cap=dispatch_cap))
     return path
 
 
@@ -144,16 +168,23 @@ def build_wrapped_command(
     *,
     pmc: Optional[str] = None,
     metrics: Optional[Sequence[str]] = None,
+    dispatch_cap: Optional[int] = None,
+    flush_interval_ms: Optional[int] = None,
 ) -> Optional[str]:
     """Render the whole-run wrapper command, creating a default pmc if needed."""
     if not app_args:
         raise ValueError("no application command supplied after --")
     metrics = tuple(metrics or ROCM_DEFAULT_METRICS)
-    pmc_path = _resolve_pmc(artifact_dir, pmc or "", metrics)
+    pmc_path = _resolve_pmc(artifact_dir, pmc or "", metrics, dispatch_cap=dispatch_cap)
     out_dir = output_dir(artifact_dir, rank, launch_ts)
     os.makedirs(out_dir, exist_ok=True)
     app = shlex.join(list(app_args))
-    return wrap_command(pmc=pmc_path, output=out_dir, app=app)
+    return wrap_command(
+        pmc=pmc_path,
+        output=out_dir,
+        app=app,
+        flush_interval_ms=flush_interval_ms,
+    )
 
 
 def is_torchrun_command(tokens: Sequence[str]) -> bool:
@@ -220,15 +251,16 @@ def render_rank_wrapper(
     pmc: str,
     artifact_dir: str,
     launch_ts: str,
+    flush_interval_ms: Optional[int] = None,
 ) -> str:
     """Render the per-rank shell wrapper torchrun executes via ``--no_python``."""
     command = sidecar_command() or DEFAULT_ROCM_ROCPROF_CMD
     app_ref = f"{shlex.quote(python_executable)} -u {shlex.quote(script)} \"$@\""
-    rocprof_line = (
-        command.replace("{pmc}", shlex.quote(pmc))
-        .replace("{output}", '"$OUT"')
-        .replace("{app}", app_ref)
+    rocprof_line = command.replace("{pmc}", shlex.quote(pmc)).replace(
+        "{output}", '"$OUT"'
     )
+    rocprof_line = inject_flush_interval(rocprof_line, flush_interval_ms)
+    rocprof_line = rocprof_line.replace("{app}", app_ref)
     out_assign = f"OUT={shlex.quote(artifact_dir)}/rank$RANK/{shlex.quote(launch_ts)}"
     return "\n".join(
         [
@@ -250,6 +282,7 @@ def build_torchrun_launch(
     launch_ts: str,
     pmc: str,
     python_executable: Optional[str] = None,
+    flush_interval_ms: Optional[int] = None,
 ) -> tuple[list[str], str, str]:
     """Return ``(torchrun_command, wrapper_path, wrapper_text)`` for per-rank wrap."""
     if not app_args:
@@ -262,6 +295,7 @@ def build_torchrun_launch(
         pmc=pmc,
         artifact_dir=artifact_dir,
         launch_ts=launch_ts,
+        flush_interval_ms=flush_interval_ms,
     )
     wrapper_path = os.path.join(artifact_dir, RANK_WRAPPER_FILENAME)
     command = [*launcher, *opts, "--no_python", wrapper_path, *script_args]
@@ -275,6 +309,7 @@ def run_torchrun(
     launch_ts: str,
     pmc: str,
     dry_run: bool,
+    flush_interval_ms: Optional[int] = None,
 ) -> int:
     """Write the rank wrapper and launch torchrun, or print it for ``--dry-run``."""
     command, wrapper_path, wrapper_text = build_torchrun_launch(
@@ -282,6 +317,7 @@ def run_torchrun(
         artifact_dir=artifact_dir,
         launch_ts=launch_ts,
         pmc=pmc,
+        flush_interval_ms=flush_interval_ms,
     )
     if dry_run:
         print(f"# rank wrapper: {wrapper_path}", file=sys.stderr)
@@ -356,16 +392,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.with_instruction_counters:
         metrics = tuple(dict.fromkeys((*metrics, *ROC_M_INSTRUCTION_METRICS)))
     launch_ts = args.launch_ts or str(int(time.time()))
-    pmc_path = _resolve_pmc(artifact_dir, args.pmc, metrics)
 
     try:
         if is_torchrun_command(app_args):
+            pmc_path = _resolve_pmc(
+                artifact_dir,
+                args.pmc,
+                metrics,
+                dispatch_cap=config.dispatch_cap,
+            )
             return run_torchrun(
                 app_args,
                 artifact_dir=artifact_dir,
                 launch_ts=launch_ts,
                 pmc=pmc_path,
                 dry_run=args.dry_run,
+                flush_interval_ms=config.flush_interval_ms,
             )
 
         rendered = build_wrapped_command(
@@ -373,8 +415,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.rank,
             launch_ts,
             app_args,
-            pmc=pmc_path,
+            pmc=args.pmc,
             metrics=metrics,
+            dispatch_cap=config.dispatch_cap,
+            flush_interval_ms=config.flush_interval_ms,
         )
         if rendered is None:
             print(

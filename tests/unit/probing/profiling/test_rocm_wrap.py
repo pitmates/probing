@@ -12,8 +12,10 @@ from probing.profiling.torch_profiler import rocm_wrap
 
 
 def test_default_pmc_text_lists_metrics():
-    text = rocm_wrap.default_pmc_text(["A", "B"])
-    assert text == "pmc: A B\n"
+    assert rocm_wrap.default_pmc_text(["A", "B"], dispatch_cap=0) == "pmc: A B\n"
+    assert rocm_wrap.default_pmc_text(["A", "B"], dispatch_cap=7) == (
+        "pmc: A B\nrange: 0:7\n"
+    )
 
 
 def test_apply_steps_arg_appends_when_missing():
@@ -61,12 +63,13 @@ def test_output_dir_uses_rank_and_launch_ts():
 def test_build_wrapped_command_generates_pmc_and_outdir(monkeypatch, tmp_path):
     captured: dict[str, str] = {}
 
-    def fake_wrap_command(*, pmc, output, app):
+    def fake_wrap_command(*, pmc, output, app, **kwargs):
         captured["pmc"] = pmc
         captured["output"] = output
         captured["app"] = app
         return "RENDERED"
 
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
     monkeypatch.setattr(rocm_wrap, "wrap_command", fake_wrap_command)
     rendered = rocm_wrap.build_wrapped_command(
         str(tmp_path),
@@ -74,6 +77,8 @@ def test_build_wrapped_command_generates_pmc_and_outdir(monkeypatch, tmp_path):
         "42",
         ["python", "train.py", "--steps", "2"],
         metrics=["M1", "M2"],
+        dispatch_cap=0,
+        flush_interval_ms=0,
     )
     assert rendered == "RENDERED"
     assert captured["pmc"].endswith(rocm_wrap.DEFAULT_PMC_FILENAME)
@@ -99,7 +104,7 @@ def test_main_dry_run_renders_command(monkeypatch, tmp_path, capsys):
     )
     monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
 
-    def fake_wrap_command(*, pmc, output, app):
+    def fake_wrap_command(*, pmc, output, app, **kwargs):
         return "rocprof -i pmc.txt -d out app"
 
     monkeypatch.setattr(rocm_wrap, "wrap_command", fake_wrap_command)
@@ -114,7 +119,7 @@ def test_main_defaults_artifact_dir(monkeypatch, tmp_path, capsys):
     monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
     monkeypatch.chdir(tmp_path)
 
-    def fake_wrap_command(*, pmc, output, app):
+    def fake_wrap_command(*, pmc, output, app, **kwargs):
         return "rocprof -i pmc.txt -d out app"
 
     monkeypatch.setattr(rocm_wrap, "wrap_command", fake_wrap_command)
@@ -176,8 +181,10 @@ def test_render_rank_wrapper_embeds_rank_and_script(monkeypatch):
     assert text.startswith("#!/bin/bash")
     assert 'RANK="${RANK:-${LOCAL_RANK:-0}}"' in text
     assert "/art/rank$RANK/42" in text
-    assert "rocprofv2 -i /art/pmc.txt --plugin file -d \"$OUT\"" in text
-    assert "/usr/bin/python3 -u /train/train.py \"$@\"" in text
+    assert (
+        "rocprofv2 -i /art/pmc.txt --plugin file -d \"$OUT\" "
+        "--flush-interval 1000 /usr/bin/python3 -u /train/train.py \"$@\""
+    ) in text
 
 
 def test_build_torchrun_launch_injects_no_python_and_wrapper(monkeypatch):

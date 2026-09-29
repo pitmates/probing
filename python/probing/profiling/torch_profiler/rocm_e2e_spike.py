@@ -17,7 +17,10 @@ Two validation steps are supported:
            --artifact-dir /path/to/artifacts --rank 0
 
 Use ``--list-counters`` to check whether the required metric names exist in
-``rocprofv2 --list-counters`` before attempting a capture.
+``rocprofv2 --list-counters`` before attempting a capture. Rendered
+``rocprofv2`` wrapper commands include the configured ``--flush-interval``;
+the dispatch cap lives in the generated ``-i`` pmc file and is produced by
+``probing-roofline`` / ``rocm_wrap`` rather than by this offline spike.
 """
 
 from __future__ import annotations

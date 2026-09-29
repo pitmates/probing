@@ -37,7 +37,7 @@ def test_render_wrap_cmd_reports_template_and_command(monkeypatch):
     assert "error" not in report
     assert report["wrap_command"] == (
         "rocprofv2 -i '/tmp/a b.txt' --plugin file -d '/tmp/o dir' "
-        "'python bench.py --steps 2'"
+        "--flush-interval 1000 'python bench.py --steps 2'"
     )
 
 
@@ -45,7 +45,10 @@ def test_render_wrap_cmd_leaves_missing_placeholders(monkeypatch):
     monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
     monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
     report = spike.render_wrap_cmd(pmc="pmc.txt", out_dir="", app="")
-    assert report["wrap_command"] == "rocprofv2 -i pmc.txt --plugin file -d {output} {app}"
+    assert report["wrap_command"] == (
+        "rocprofv2 -i pmc.txt --plugin file -d {output} "
+        "--flush-interval 1000 {app}"
+    )
 
 
 def test_render_wrap_cmd_reports_missing_template(monkeypatch):

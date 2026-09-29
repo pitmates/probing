@@ -63,6 +63,7 @@ def test_wrap_command_quotes_replacements(monkeypatch):
         pmc="/tmp/a b.txt",
         output="/tmp/o dir",
         app="bench.py --steps 2",
+        flush_interval_ms=0,
     )
     assert shlex.split(rendered) == [
         "python",
@@ -74,6 +75,40 @@ def test_wrap_command_quotes_replacements(monkeypatch):
         "-i",
         "/tmp/a b.txt",
     ]
+
+
+def test_wrap_command_injects_flush_interval_before_app(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCPROF_CMD",
+        "rocprofv2 -i {pmc} --plugin file -d {output} {app}",
+    )
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_CONFIG",
+        '{"flush_interval_ms": 250}',
+    )
+    rendered = wrap_command(
+        pmc="pmc.txt",
+        output="/tmp/out",
+        app="python train.py",
+    )
+    assert rendered == (
+        "rocprofv2 -i pmc.txt --plugin file -d /tmp/out "
+        "--flush-interval 250 'python train.py'"
+    )
+
+
+def test_wrap_command_skips_flush_for_legacy_rocprof(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCPROF_CMD",
+        "rocprof -i {pmc} -d {output} {app}",
+    )
+    rendered = wrap_command(
+        pmc="pmc.txt",
+        output="/tmp/out",
+        app="python train.py",
+        flush_interval_ms=1000,
+    )
+    assert rendered == "rocprof -i pmc.txt -d /tmp/out 'python train.py'"
 
 
 def test_wrap_command_leaves_unsupplied_placeholders(monkeypatch):

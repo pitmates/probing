@@ -12,6 +12,8 @@ path to a JSON file::
       "probe_cmd": "rocprofv2 --list-counters",
       "artifact_dir": "/root/private_data/zlp/tmp/probing/data_dcu",
       "keep_artifacts": false,
+      "dispatch_cap": 2000,
+      "flush_interval_ms": 1000,
       "metrics": ["TCC_EA_RDREQ_32B", "TCC_EA_RDREQ", "TCC_EA_WRREQ_64B", "TCC_EA_WRREQ"],
       "peaks": {"backend": "rocm", "device_arch": "gfx936",
                 "peaks": {"fp16_tensor_dense": {"peak_flops": 0, "peak_bytes_per_sec": 1.23e12}}},
@@ -35,6 +37,11 @@ CONFIG_ENV = "PROBING_TORCH_ROOFLINE_CONFIG"
 ARTIFACT_DIR_ENV = "PROBING_TORCH_ROOFLINE_ARTIFACT_DIR"
 KEEP_ARTIFACTS_ENV = "PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS"
 FINALIZED_ENV = "PROBING_TORCH_ROOFLINE_FINALIZED"
+DISPATCH_CAP_ENV = "PROBING_TORCH_ROOFLINE_DISPATCH_CAP"
+FLUSH_INTERVAL_MS_ENV = "PROBING_TORCH_ROOFLINE_FLUSH_INTERVAL_MS"
+
+DEFAULT_DISPATCH_CAP = 2000
+DEFAULT_FLUSH_INTERVAL_MS = 1000
 
 
 @dataclass(frozen=True)
@@ -49,6 +56,8 @@ class RooflineConfig:
     artifact_dir: str = ""
     keep_artifacts: bool = False
     finalized: bool = False
+    dispatch_cap: int = DEFAULT_DISPATCH_CAP
+    flush_interval_ms: int = DEFAULT_FLUSH_INTERVAL_MS
 
 
 def _parse_metrics(value: Any) -> tuple[str, ...]:
@@ -81,6 +90,19 @@ def _parse_weights(value: Any) -> dict[str, int] | None:
             continue
         weights[name.strip()] = int(weight)
     return weights
+
+
+def _parse_nonnegative_int(value: Any) -> int | None:
+    """Coerce a config value to a non-negative integer, or ``None``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        parsed = int(value)
+    except (OverflowError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
 
 
 def _read_raw_config() -> dict[str, Any]:
@@ -146,6 +168,22 @@ def load_roofline_config() -> RooflineConfig:
         "on",
     }
 
+    dispatch_cap = _parse_nonnegative_int(raw.get("dispatch_cap"))
+    if dispatch_cap is None:
+        dispatch_cap = _parse_nonnegative_int(
+            os.environ.get(DISPATCH_CAP_ENV, "").strip() or None
+        )
+    if dispatch_cap is None:
+        dispatch_cap = DEFAULT_DISPATCH_CAP
+
+    flush_interval_ms = _parse_nonnegative_int(raw.get("flush_interval_ms"))
+    if flush_interval_ms is None:
+        flush_interval_ms = _parse_nonnegative_int(
+            os.environ.get(FLUSH_INTERVAL_MS_ENV, "").strip() or None
+        )
+    if flush_interval_ms is None:
+        flush_interval_ms = DEFAULT_FLUSH_INTERVAL_MS
+
     peaks = raw.get("peaks") if isinstance(raw.get("peaks"), dict) else None
     flop_weights = _parse_weights(raw.get("flop_weights"))
 
@@ -160,4 +198,6 @@ def load_roofline_config() -> RooflineConfig:
         artifact_dir=artifact_dir,
         keep_artifacts=keep_artifacts,
         finalized=finalized,
+        dispatch_cap=dispatch_cap,
+        flush_interval_ms=flush_interval_ms,
     )

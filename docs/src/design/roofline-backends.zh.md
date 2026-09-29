@@ -102,7 +102,7 @@ v1 采用两段式模型，采集与统计解耦。
 - 基准命令形态：
 
 ```text
-rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
+rocprofv2 -i {pmc} --plugin file -d {output} --flush-interval <ms> <train_cmd>
 ```
 
 - `{pmc}` 默认为仅含 DRAM 四计数器的 metric 文件；`SQ_INSTS_*` 指令计数通过 `probing-roofline --with-instruction-counters` 显式启用，避免默认全程采集的 kernel replay 开销。launcher 渲染时令 `{output}={artifact_dir}/rank{rank}/{launch_ts}`，与 offline import 的发现规则一致。`--plugin file` 输出 counter 文件；时间戳列名随 DTK 版本变化，供后续关联与切片。
@@ -144,7 +144,7 @@ rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
 
 ```text
 训练启动 / launcher
-   rocprofv2 -i {pmc} --plugin file -d {artifact_dir}/rank{rank}/{launch_ts} <train_cmd>
+   rocprofv2 -i {pmc} --plugin file -d {artifact_dir}/rank{rank}/{launch_ts} --flush-interval <ms> <train_cmd>
         └─ 全程采集 ─▶ {artifact_dir}/rank{rank}/{launch_ts}/*.csv|json （counter artifact）
                               │
                               ▼  rocm_sidecar.parse_counter_artifact()
@@ -231,6 +231,8 @@ rocprofv2 -i {pmc} --plugin file -d {output} <train_cmd>
 2. Phase 1（已完成，代码）：抽取 `RooflineBackend`，CUDA 路径回归保持不变。
 3. Phase 2（已完成，代码）：实现 `rocm` capability probe 与 metric catalog、`PROBING_TORCH_ROOFLINE_CONFIG` 配置收敛；capture 元数据落库。
 4. Phase 3（已完成，代码）：v1 采集已从“窗口内 sidecar”改为 wrapper：`wrap_command()` 渲染含 `{pmc}`/`{output}`/`{app}` 且默认使用 `--plugin file` 的命令；`import_artifact_rows()` 实现 offline import（artifact → `profile_counter` → 进程内 `join_rocm_rows_with_timeline` → `profile_roofline`）与临时 artifact 回收。
+
+**采集开销控制（默认启用）**：v1 全程 wrapper 默认写 `range: 0:<dispatch_cap>` 到 `-i` 输入文件（`dispatch_cap` 默认 2000，`0` 表示不限制），并在命令中注入 `--flush-interval <ms>`（默认 1000）。输入文件仍只有一个 `pmc:` 行，因此 `range` 只抑制后续 dispatch 的 counter 落盘、不会引入多次 kernel replay；两者共同把“全程逐 kernel 落 CSV + 高频 flush”的线性开销收敛为有界窗口。如需覆盖更长训练区间，调大 `dispatch_cap` 即可，无需新增其他开关。
 5. Phase 4（已完成，代码）：离线 fixture/单测/dry-run；`rocm_e2e_spike` 验证 CSV/JSON 解析与 wrapper 命令模板（不实际采集）。本机无 `_core`，pytest 未运行，待真实环境执行。
 6. Phase 5（真实 DCU 待验证，单卡）：单卡小 bench 跑通 `rocprofv2 -i pmc.txt --plugin file -d out <app>` 端到端 counter，确认 metric 名 / 时间戳列 / artifact 后缀，回填峰值 / FLOP 权重。
 7. Phase 5b（多卡注入层级，v1 主路径专项）：单机多卡逐 rank 包裹已实现（`rocm_wrap` 自动识别 `torchrun`，生成 `--no_python` rank wrapper）；多机多卡与 counter 归属的真实落盘仍需真机验证。
