@@ -119,3 +119,29 @@ def test_artifact_dir_env_fallback(monkeypatch):
     assert config.artifact_dir == "/env/artifacts"
     assert config.keep_artifacts is True
     assert config.finalized is True
+
+
+def test_trace_period_from_config(monkeypatch):
+    monkeypatch.setenv(
+        CONFIG_ENV,
+        json.dumps({"trace_period": "1000:2000:4000"}),
+    )
+    assert load_roofline_config().trace_period == "1000:2000:4000"
+
+
+def test_trace_period_env_fallback(monkeypatch):
+    monkeypatch.delenv(CONFIG_ENV, raising=False)
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_TRACE_PERIOD", "500:1500:5000")
+    assert load_roofline_config().trace_period == "500:1500:5000"
+
+
+def test_trace_period_rejects_malformed(monkeypatch):
+    for value in ("", "1000", "a:1:1", "1:1:x", "1::1", " 1:2:3 "):
+        monkeypatch.setenv(CONFIG_ENV, json.dumps({"trace_period": value}))
+        assert load_roofline_config().trace_period == ""
+
+
+def test_trace_period_defaults_empty(monkeypatch):
+    monkeypatch.delenv(CONFIG_ENV, raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_TRACE_PERIOD", raising=False)
+    assert load_roofline_config().trace_period == ""

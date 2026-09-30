@@ -14,6 +14,7 @@ path to a JSON file::
       "keep_artifacts": false,
       "dispatch_cap": 2000,
       "flush_interval_ms": 1000,
+      "trace_period": "",
       "metrics": ["TCC_EA_RDREQ_32B", "TCC_EA_RDREQ", "TCC_EA_WRREQ_64B", "TCC_EA_WRREQ"],
       "peaks": {"backend": "rocm", "device_arch": "gfx936",
                 "peaks": {"fp16_tensor_dense": {"peak_flops": 0, "peak_bytes_per_sec": 1.23e12}}},
@@ -39,6 +40,7 @@ KEEP_ARTIFACTS_ENV = "PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS"
 FINALIZED_ENV = "PROBING_TORCH_ROOFLINE_FINALIZED"
 DISPATCH_CAP_ENV = "PROBING_TORCH_ROOFLINE_DISPATCH_CAP"
 FLUSH_INTERVAL_MS_ENV = "PROBING_TORCH_ROOFLINE_FLUSH_INTERVAL_MS"
+TRACE_PERIOD_ENV = "PROBING_TORCH_ROOFLINE_TRACE_PERIOD"
 
 DEFAULT_DISPATCH_CAP = 2000
 DEFAULT_FLUSH_INTERVAL_MS = 1000
@@ -58,6 +60,7 @@ class RooflineConfig:
     finalized: bool = False
     dispatch_cap: int = DEFAULT_DISPATCH_CAP
     flush_interval_ms: int = DEFAULT_FLUSH_INTERVAL_MS
+    trace_period: str = ""
 
 
 def _parse_metrics(value: Any) -> tuple[str, ...]:
@@ -103,6 +106,25 @@ def _parse_nonnegative_int(value: Any) -> int | None:
     except (OverflowError, ValueError):
         return None
     return parsed if parsed >= 0 else None
+
+
+def _parse_trace_period(value: Any) -> str:
+    """Validate a ``DELAY:ACTIVE:LOOP_RESET`` trace period string.
+
+    ``rocprofv2 -tp <DELAY>:<ACTIVE_TIME>:<LOOP_RESET_TIME>`` bounds counter
+    collection to periodic windows so the rest of the run stays near baseline.
+    Malformed or empty values fall back to ``""`` (no trace period injected).
+    """
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    parts = value.split(":")
+    if len(parts) != 3:
+        return ""
+    for part in parts:
+        if not part.isdigit():
+            return ""
+    return value
 
 
 def _read_raw_config() -> dict[str, Any]:
@@ -184,6 +206,12 @@ def load_roofline_config() -> RooflineConfig:
     if flush_interval_ms is None:
         flush_interval_ms = DEFAULT_FLUSH_INTERVAL_MS
 
+    trace_period = _parse_trace_period(raw.get("trace_period"))
+    if not trace_period:
+        trace_period = _parse_trace_period(
+            os.environ.get(TRACE_PERIOD_ENV, "").strip() or None
+        )
+
     peaks = raw.get("peaks") if isinstance(raw.get("peaks"), dict) else None
     flop_weights = _parse_weights(raw.get("flop_weights"))
 
@@ -200,4 +228,5 @@ def load_roofline_config() -> RooflineConfig:
         finalized=finalized,
         dispatch_cap=dispatch_cap,
         flush_interval_ms=flush_interval_ms,
+        trace_period=trace_period,
     )

@@ -10,7 +10,9 @@ pipeline in two:
 
   around the training process, producing per-rank counter artifacts for the
   run. The wrapper template renders ``--flush-interval <ms>`` so counter
-  buffers are flushed in batches instead of once per dispatch.
+  buffers are flushed in batches, and can inject ``-tp <delay>:<active>:<reset>``
+  to bound counter collection to periodic windows (DTK 26.04 rocprofv2
+  serializes every kernel and exposes no flag to disable that).
 
 * The in-process collector calls ``import_artifact_rows()`` at finalize to find
   the newest artifact under the configured directory, parse it with
@@ -25,6 +27,7 @@ template.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 from typing import Any, Optional
@@ -94,19 +97,43 @@ def _configured_flush_interval_ms(value: Optional[int]) -> Optional[int]:
     return load_roofline_config().flush_interval_ms
 
 
+def inject_trace_period(command: str, trace_period: Optional[str]) -> str:
+    """Insert ``-tp <delay>:<active>:<reset>`` into ``rocprofv2`` templates.
+
+    ``rocprofv2`` serializes every kernel while collecting counters, so a
+    whole-run wrap-launch makes each step ~10x slower. The documented
+    ``-tp/--trace-period`` option bounds collection to repeating windows
+    (``DELAY:ACTIVE_TIME:LOOP_RESET_TIME`` in milliseconds); outside those
+    windows the training runs at baseline. The flag is only meaningful for
+    ``rocprofv2`` and is left unset unless the operator configures it.
+    """
+    if not trace_period or "rocprofv2" not in command:
+        return command
+    if "rocprofv3" in command:
+        return command
+    if re.search(r"(?:^|\s)(?:-tp|--trace-period)(?:\s|=)", command):
+        return command
+    insertion = f"-tp {trace_period}"
+    if "{app}" in command:
+        return command.replace("{app}", f"{insertion} {{app}}")
+    return f"{command.rstrip()} {insertion}"
+
+
 def wrap_command(
     *,
     pmc: Optional[str] = None,
     output: Optional[str] = None,
     app: Optional[str] = None,
     flush_interval_ms: Optional[int] = None,
+    trace_period: Optional[str] = None,
 ) -> Optional[str]:
     """Render the wrapper template with shell-quoted replacements.
 
     Unset placeholders are left in the template so callers can dry-run partial
     renders for documentation or diagnostics. When ``flush_interval_ms`` is
     unset, the configured default is injected before ``{app}``; pass ``0`` to
-    render a command without the interval.
+    render a command without the interval. When ``trace_period`` is unset the
+    configured value (if any) is injected as ``-tp`` before ``{app}``.
     """
     command = sidecar_command()
     if command is None:
@@ -119,6 +146,9 @@ def wrap_command(
         if value is not None:
             rendered = rendered.replace(placeholder, shlex.quote(value))
     rendered = inject_flush_interval(rendered, flush_interval_ms)
+    if trace_period is None:
+        trace_period = load_roofline_config().trace_period
+    rendered = inject_trace_period(rendered, trace_period)
     if app is not None:
         rendered = rendered.replace("{app}", shlex.quote(app))
     return rendered

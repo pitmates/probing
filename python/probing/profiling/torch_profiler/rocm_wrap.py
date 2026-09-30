@@ -53,6 +53,7 @@ from .rocm_metrics import ROCM_DEFAULT_METRICS, ROCM_INSTRUCTION_METRICS
 from .rocm_runner import (
     DEFAULT_ROCM_ROCPROF_CMD,
     inject_flush_interval,
+    inject_trace_period,
     sidecar_command,
     sidecar_enabled,
     wrap_command,
@@ -170,6 +171,7 @@ def build_wrapped_command(
     metrics: Optional[Sequence[str]] = None,
     dispatch_cap: Optional[int] = None,
     flush_interval_ms: Optional[int] = None,
+    trace_period: Optional[str] = None,
 ) -> Optional[str]:
     """Render the whole-run wrapper command, creating a default pmc if needed."""
     if not app_args:
@@ -184,6 +186,7 @@ def build_wrapped_command(
         output=out_dir,
         app=app,
         flush_interval_ms=flush_interval_ms,
+        trace_period=trace_period,
     )
 
 
@@ -252,6 +255,7 @@ def render_rank_wrapper(
     artifact_dir: str,
     launch_ts: str,
     flush_interval_ms: Optional[int] = None,
+    trace_period: Optional[str] = None,
 ) -> str:
     """Render the per-rank shell wrapper torchrun executes via ``--no_python``."""
     command = sidecar_command() or DEFAULT_ROCM_ROCPROF_CMD
@@ -260,6 +264,9 @@ def render_rank_wrapper(
         "{output}", '"$OUT"'
     )
     rocprof_line = inject_flush_interval(rocprof_line, flush_interval_ms)
+    if trace_period is None:
+        trace_period = load_roofline_config().trace_period
+    rocprof_line = inject_trace_period(rocprof_line, trace_period)
     rocprof_line = rocprof_line.replace("{app}", app_ref)
     out_assign = f"OUT={shlex.quote(artifact_dir)}/rank$RANK/{shlex.quote(launch_ts)}"
     return "\n".join(
@@ -283,6 +290,7 @@ def build_torchrun_launch(
     pmc: str,
     python_executable: Optional[str] = None,
     flush_interval_ms: Optional[int] = None,
+    trace_period: Optional[str] = None,
 ) -> tuple[list[str], str, str]:
     """Return ``(torchrun_command, wrapper_path, wrapper_text)`` for per-rank wrap."""
     if not app_args:
@@ -296,6 +304,7 @@ def build_torchrun_launch(
         artifact_dir=artifact_dir,
         launch_ts=launch_ts,
         flush_interval_ms=flush_interval_ms,
+        trace_period=trace_period,
     )
     wrapper_path = os.path.join(artifact_dir, RANK_WRAPPER_FILENAME)
     command = [*launcher, *opts, "--no_python", wrapper_path, *script_args]
@@ -310,6 +319,7 @@ def run_torchrun(
     pmc: str,
     dry_run: bool,
     flush_interval_ms: Optional[int] = None,
+    trace_period: Optional[str] = None,
 ) -> int:
     """Write the rank wrapper and launch torchrun, or print it for ``--dry-run``."""
     command, wrapper_path, wrapper_text = build_torchrun_launch(
@@ -318,6 +328,7 @@ def run_torchrun(
         launch_ts=launch_ts,
         pmc=pmc,
         flush_interval_ms=flush_interval_ms,
+        trace_period=trace_period,
     )
     if dry_run:
         print(f"# rank wrapper: {wrapper_path}", file=sys.stderr)
@@ -408,6 +419,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 pmc=pmc_path,
                 dry_run=args.dry_run,
                 flush_interval_ms=config.flush_interval_ms,
+                trace_period=config.trace_period,
             )
 
         rendered = build_wrapped_command(
@@ -419,6 +431,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             metrics=metrics,
             dispatch_cap=config.dispatch_cap,
             flush_interval_ms=config.flush_interval_ms,
+            trace_period=config.trace_period,
         )
         if rendered is None:
             print(

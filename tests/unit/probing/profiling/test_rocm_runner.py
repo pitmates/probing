@@ -8,6 +8,7 @@ from pathlib import Path
 
 from probing.profiling.torch_profiler.rocm_runner import (
     DEFAULT_ROCM_ROCPROF_CMD,
+    inject_trace_period,
     artifact_finalized,
     artifact_root,
     import_artifact_rows,
@@ -187,3 +188,31 @@ def test_keep_artifacts_env(monkeypatch):
     assert keep_artifacts() is True
     monkeypatch.setenv("PROBING_TORCH_ROOFLINE_KEEP_ARTIFACTS", "0")
     assert keep_artifacts() is False
+
+
+def test_inject_trace_period_inserts_before_app():
+    assert inject_trace_period(
+        "rocprofv2 -i {pmc} --plugin file -d {output} {app}", "0:15000:999999"
+    ) == "rocprofv2 -i {pmc} --plugin file -d {output} -tp 0:15000:999999 {app}"
+
+
+def test_inject_trace_period_skips_when_empty_or_legacy():
+    command = "rocprof -i {pmc} -d {output} {app}"
+    assert inject_trace_period(command, "0:15000:999999") == command
+    assert inject_trace_period("rocprofv2 -i {pmc} {app}", "") == "rocprofv2 -i {pmc} {app}"
+
+
+def test_wrap_command_injects_configured_trace_period(monkeypatch):
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_ROCPROF_CMD",
+        "rocprofv2 -i {pmc} --plugin file -d {output} {app}",
+    )
+    monkeypatch.setenv(
+        "PROBING_TORCH_ROOFLINE_CONFIG",
+        '{"trace_period": "0:15000:999999", "flush_interval_ms": 0}',
+    )
+    rendered = wrap_command(pmc="pmc.txt", output="/tmp/out", app="python train.py")
+    assert rendered == (
+        "rocprofv2 -i pmc.txt --plugin file -d /tmp/out "
+        "-tp 0:15000:999999 'python train.py'"
+    )

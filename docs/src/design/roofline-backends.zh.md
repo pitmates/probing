@@ -232,11 +232,11 @@ rocprofv2 -i {pmc} --plugin file -d {output} --flush-interval <ms> <train_cmd>
 3. Phase 2（已完成，代码）：实现 `rocm` capability probe 与 metric catalog、`PROBING_TORCH_ROOFLINE_CONFIG` 配置收敛；capture 元数据落库。
 4. Phase 3（已完成，代码）：v1 采集已从“窗口内 sidecar”改为 wrapper：`wrap_command()` 渲染含 `{pmc}`/`{output}`/`{app}` 且默认使用 `--plugin file` 的命令；`import_artifact_rows()` 实现 offline import（artifact → `profile_counter` → 进程内 `join_rocm_rows_with_timeline` → `profile_roofline`）与临时 artifact 回收。
 
-**采集开销控制（默认启用）**：v1 全程 wrapper 默认写 `range: 0:<dispatch_cap>` 到 `-i` 输入文件（`dispatch_cap` 默认 2000，`0` 表示不限制），并在命令中注入 `--flush-interval <ms>`（默认 1000）。输入文件仍只有一个 `pmc:` 行，因此 `range` 只抑制后续 dispatch 的 counter 落盘；但注意：DTK 26.04 的 `rocprofv2` 默认会逐 kernel 串行化，且该版本不提供 `-ns`/`--no-serialization` 开关，因此 `range` 只减小了 artifact 体积、并没有消除串行化带来的吞吐下降——真实 DCU 上仍需先用 `--steps N` 限制采集窗口，或改用采样/短窗口方案，性能问题不能被默认参数掩盖。如需覆盖更长训练区间，调大 `dispatch_cap` 即可，无需新增其他开关。
+**采集开销控制（默认启用）**：v1 全程 wrapper 默认写 `range: 0:<dispatch_cap>` 到 `-i` 输入文件（`dispatch_cap` 默认 2000，`0` 表示不限制），并注入 `--flush-interval <ms>`（默认 1000）；输入文件仍只有一个 `pmc:` 行，`range` 只减小 artifact 体积。DTK 26.04 的 `rocprofv2` 默认逐 kernel 串行化且无 `-ns`/`--no-serialization` 开关，因此固定 ~10x 的串行化开销无法靠开关消除；真机验证确认为两段式：固定串行化 + artifact 随 step 线性累积（`range:` 是 rocprof v1 语法、被 v2 忽略，需另解）。产品级低开销方案优先用 rocprofv2 官方 `-tp/--trace-period`（`DELAY:ACTIVE_TIME:LOOP_RESET_TIME` ms）把 counter 采集限定在周期窗口内，窗口外训练回到 baseline；该参数经 `PROBING_TORCH_ROOFLINE_TRACE_PERIOD` 或 config `trace_period` 注入，留空表示全程采集。真正的按需 start/stop 需要方法 2。
 5. Phase 4（已完成，代码）：离线 fixture/单测/dry-run；`rocm_e2e_spike` 验证 CSV/JSON 解析与 wrapper 命令模板（不实际采集）。本机无 `_core`，pytest 未运行，待真实环境执行。
 6. Phase 5（真实 DCU 待验证，单卡）：单卡小 bench 跑通 `rocprofv2 -i pmc.txt --plugin file -d out <app>` 端到端 counter，确认 metric 名 / 时间戳列 / artifact 后缀，回填峰值 / FLOP 权重。
 7. Phase 5b（多卡注入层级，v1 主路径专项）：单机多卡逐 rank 包裹已实现（`rocm_wrap` 自动识别 `torchrun`，生成 `--no_python` rank wrapper）；多机多卡与 counter 归属的真实落盘仍需真机验证。
-8. 后续（暂不实施）：方法 2 进程内 ROCProfiler/HSA 原生采集，恢复“训练中按需 start/stop”；保留 `RooflineBackend` 采集策略替换点。
+8. 方法 2（产品级，待立项）：进程内 ROCProfiler-SDK/HSA 原生采集，恢复“训练中按需 start/stop”。注意：rocprofiler-sdk 的 *dispatch counting* 同样要求 per-kernel 串行化（文档明示），不能自然消除 DTK 的 ~10x；按需窗口把串行化限制在短窗口内才是其低开销来源；device counting / PC sampling 是不串行化的备选但粒度不同。依赖 `librocprofiler-sdk` 头文件与 `_core` 编译，保留 `RooflineBackend` 采集策略替换点。
 
 ## 11. 测试
 
