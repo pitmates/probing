@@ -399,9 +399,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 2
 
+    if config.trace_period:
+        print(
+            "warning: PROBING_TORCH_ROOFLINE_TRACE_PERIOD / config trace_period "
+            "bounds the rocprofv2 trace window, not the --plugin file counter "
+            "stream. On DTK 26.04 rocprofv2 this has been observed to produce "
+            "an empty pmc_1 directory with no results_*.csv. Prefer a short "
+            "--steps run without trace_period for counter roofline.",
+            file=sys.stderr,
+        )
+
     metrics = config.metrics or ROCM_DEFAULT_METRICS
     if args.with_instruction_counters:
-        metrics = tuple(dict.fromkeys((*metrics, *ROC_M_INSTRUCTION_METRICS)))
+        metrics = tuple(dict.fromkeys((*metrics, *ROCM_INSTRUCTION_METRICS)))
     launch_ts = args.launch_ts or str(int(time.time()))
 
     try:

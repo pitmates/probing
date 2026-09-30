@@ -223,3 +223,37 @@ def test_main_torchrun_dry_run_uses_per_rank_wrapper(monkeypatch, tmp_path, caps
     assert "--no_python" in captured
     assert rocm_wrap.RANK_WRAPPER_FILENAME in captured
     assert "rank$RANK" in captured
+
+
+def test_main_warns_when_trace_period_is_set(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv(rocm_wrap.ARTIFACT_DIR_ENV, str(tmp_path))
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
+    monkeypatch.setenv("PROBING_TORCH_ROOFLINE_TRACE_PERIOD", "3000:5000:10000")
+
+    code = rocm_wrap.main(
+        ["--dry-run", "--", "torchrun", "--nproc_per_node", "1", "train.py"]
+    )
+    assert code == 0
+    captured = capsys.readouterr().err
+    assert "not the --plugin file counter" in captured
+
+
+def test_main_with_instruction_counters_extends_metrics(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv(rocm_wrap.ARTIFACT_DIR_ENV, str(tmp_path))
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
+
+    code = rocm_wrap.main(
+        [
+            "--dry-run",
+            "--with-instruction-counters",
+            "--",
+            "python",
+            "train.py",
+        ]
+    )
+    assert code == 0
+    pmc_text = (tmp_path / rocm_wrap.DEFAULT_PMC_FILENAME).read_text(encoding="utf-8")
+    assert "SQ_INSTS_VALU" in pmc_text
+    assert "TCC_EA_RDREQ" in pmc_text

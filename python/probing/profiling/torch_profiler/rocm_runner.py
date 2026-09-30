@@ -10,9 +10,11 @@ pipeline in two:
 
   around the training process, producing per-rank counter artifacts for the
   run. The wrapper template renders ``--flush-interval <ms>`` so counter
-  buffers are flushed in batches, and can inject ``-tp <delay>:<active>:<reset>``
-  to bound counter collection to periodic windows (DTK 26.04 rocprofv2
-  serializes every kernel and exposes no flag to disable that).
+  buffers are flushed in batches. An optional ``-tp <delay>:<active>:<reset>``
+  bounds the rocprofv2 trace window, not the ``--plugin file`` counter stream;
+  DTK 26.04 rocprofv2 has been observed to emit no ``results_*.csv`` when
+  ``-tp`` is combined with counter collection, so it is not the supported
+  low-overhead counter lever yet.
 
 * The in-process collector calls ``import_artifact_rows()`` at finalize to find
   the newest artifact under the configured directory, parse it with
@@ -102,10 +104,12 @@ def inject_trace_period(command: str, trace_period: Optional[str]) -> str:
 
     ``rocprofv2`` serializes every kernel while collecting counters, so a
     whole-run wrap-launch makes each step ~10x slower. The documented
-    ``-tp/--trace-period`` option bounds collection to repeating windows
-    (``DELAY:ACTIVE_TIME:LOOP_RESET_TIME`` in milliseconds); outside those
-    windows the training runs at baseline. The flag is only meaningful for
-    ``rocprofv2`` and is left unset unless the operator configures it.
+    ``-tp/--trace-period`` option (``DELAY:ACTIVE_TIME:LOOP_RESET_TIME`` in
+    milliseconds) bounds the rocprofv2 trace window. It gates tracing rather
+    than ``--plugin file`` counter collection; on DTK 26.04 the counter plugin
+    can emit an empty ``pmc_1`` directory when ``-tp`` is present. The flag is
+    only meaningful for ``rocprofv2`` and is left unset unless the operator
+    configures it.
     """
     if not trace_period or "rocprofv2" not in command:
         return command

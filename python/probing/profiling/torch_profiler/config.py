@@ -111,8 +111,9 @@ def _parse_nonnegative_int(value: Any) -> int | None:
 def _parse_trace_period(value: Any) -> str:
     """Validate a ``DELAY:ACTIVE:LOOP_RESET`` trace period string.
 
-    ``rocprofv2 -tp <DELAY>:<ACTIVE_TIME>:<LOOP_RESET_TIME>`` bounds counter
-    collection to periodic windows so the rest of the run stays near baseline.
+    ``rocprofv2 -tp <DELAY>:<ACTIVE_TIME>:<LOOP_RESET_TIME>`` (milliseconds)
+    bounds the trace window. It does not gate ``--plugin file`` counter
+    collection, so on DTK 26.04 it can leave the counter artifact empty.
     Malformed or empty values fall back to ``""`` (no trace period injected).
     """
     if not isinstance(value, str):
