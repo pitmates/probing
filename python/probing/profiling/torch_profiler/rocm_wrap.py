@@ -5,11 +5,10 @@ operator has to wrap the training launch command. This entry point collapses
 that wrapping into one command: the only thing the user supplies is the
 training command itself. The metrics file, output directory, and rank mapping
 come from the roofline config with defaults. By default the generated
-``-i`` counter file adds ``range: 0:<dispatch_cap>`` (2000), the
-``rocprofv2`` command injects ``-ns`` to disable per-kernel serialization, and
-``--flush-interval <ms>`` (1000) batches counter flushes. Together these bound
-whole-run collection instead of writing one serialized counter row per kernel
-for the entire run. Set the ``dispatch_cap`` / ``flush_interval_ms`` keys in
+``-i`` counter file adds ``range: 0:<dispatch_cap>`` (2000) and the command
+injects ``--flush-interval <ms>`` (1000), bounding whole-run collection to the
+first dispatches instead of writing one counter row per kernel for the entire
+run. Set the ``dispatch_cap`` / ``flush_interval_ms`` keys in
 ``PROBING_TORCH_ROOFLINE_CONFIG`` to tune, or ``dispatch_cap=0`` to collect the
 whole run.
 
@@ -54,7 +53,6 @@ from .rocm_metrics import ROCM_DEFAULT_METRICS, ROCM_INSTRUCTION_METRICS
 from .rocm_runner import (
     DEFAULT_ROCM_ROCPROF_CMD,
     inject_flush_interval,
-    inject_no_serialization,
     sidecar_command,
     sidecar_enabled,
     wrap_command,
@@ -261,7 +259,6 @@ def render_rank_wrapper(
     rocprof_line = command.replace("{pmc}", shlex.quote(pmc)).replace(
         "{output}", '"$OUT"'
     )
-    rocprof_line = inject_no_serialization(rocprof_line)
     rocprof_line = inject_flush_interval(rocprof_line, flush_interval_ms)
     rocprof_line = rocprof_line.replace("{app}", app_ref)
     out_assign = f"OUT={shlex.quote(artifact_dir)}/rank$RANK/{shlex.quote(launch_ts)}"

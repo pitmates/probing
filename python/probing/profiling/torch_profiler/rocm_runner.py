@@ -6,12 +6,11 @@ pipeline in two:
 
 * The operator or a launcher renders ``wrap_command()`` and runs
 
-  ``rocprofv2 -ns -i {pmc} --plugin file -d {artifact_dir}/rank{rank}/{launch_ts} <app>``
+  ``rocprofv2 -i {pmc} --plugin file -d {artifact_dir}/rank{rank}/{launch_ts} <app>``
 
   around the training process, producing per-rank counter artifacts for the
-  run. The wrapper template injects ``-ns`` by default to disable per-kernel
-  serialization and renders ``--flush-interval <ms>`` so counter buffers are
-  flushed in batches instead of once per dispatch.
+  run. The wrapper template renders ``--flush-interval <ms>`` so counter
+  buffers are flushed in batches instead of once per dispatch.
 
 * The in-process collector calls ``import_artifact_rows()`` at finalize to find
   the newest artifact under the configured directory, parse it with
@@ -26,7 +25,6 @@ template.
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import shutil
 from typing import Any, Optional
@@ -41,7 +39,7 @@ from .rocm_sidecar import parse_counter_artifact
 
 _ARTIFACT_SUFFIXES = {".json", ".csv", ".jsonl"}
 
-DEFAULT_ROCM_ROCPROF_CMD = "rocprofv2 -ns -i {pmc} --plugin file -d {output} {app}"
+DEFAULT_ROCM_ROCPROF_CMD = "rocprofv2 -i {pmc} --plugin file -d {output} {app}"
 
 
 def sidecar_enabled() -> bool:
@@ -62,25 +60,6 @@ def sidecar_command() -> Optional[str]:
     if legacy:
         return legacy
     return DEFAULT_ROCM_ROCPROF_CMD
-
-
-def inject_no_serialization(command: str) -> str:
-    """Insert ``-ns`` into ``rocprofv2`` templates by default.
-
-    ``rocprofv2`` serializes every kernel by default, which stalls the GPU
-    pipeline and is the dominant cost of whole-run counter collection. The
-    ``-ns`` / ``--no-serialization`` flag disables that behaviour for counter
-    collection and is therefore injected by default unless the template
-    already opts out. Legacy ``rocprof`` v1 commands use different semantics
-    and are left untouched.
-    """
-    if "rocprofv2" not in command:
-        return command
-    if "--no-serialization" in command:
-        return command
-    if re.search(r"(?:^|\s)-ns(?:\s|$)", command):
-        return command
-    return command.replace("rocprofv2", "rocprofv2 -ns", 1)
 
 
 def inject_flush_interval(
@@ -139,7 +118,6 @@ def wrap_command(
     ):
         if value is not None:
             rendered = rendered.replace(placeholder, shlex.quote(value))
-    rendered = inject_no_serialization(rendered)
     rendered = inject_flush_interval(rendered, flush_interval_ms)
     if app is not None:
         rendered = rendered.replace("{app}", shlex.quote(app))

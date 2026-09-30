@@ -102,11 +102,11 @@ v1 采用两段式模型，采集与统计解耦。
 - 基准命令形态：
 
 ```text
-rocprofv2 -ns -i {pmc} --plugin file -d {output} --flush-interval <ms> <train_cmd>
+rocprofv2 -i {pmc} --plugin file -d {output} --flush-interval <ms> <train_cmd>
 ```
 
 - `{pmc}` 默认为仅含 DRAM 四计数器的 metric 文件；`SQ_INSTS_*` 指令计数通过 `probing-roofline --with-instruction-counters` 显式启用，避免默认全程采集的 kernel replay 开销。launcher 渲染时令 `{output}={artifact_dir}/rank{rank}/{launch_ts}`，与 offline import 的发现规则一致。`--plugin file` 输出 counter 文件；时间戳列名随 DTK 版本变化，供后续关联与切片。
-- v1 先单卡单进程验证 `rocprofv2 -ns -i pmc.txt --plugin file -d out python bench.py`；单机多卡 `torchrun` 由 `probing-roofline` 自动识别并逐 rank 包裹（`--no_python` + 生成的 rank wrapper），每个 rank 写 `{artifact_dir}/rank{rank}/{launch_ts}`。多机多卡的注入层级仍见 Phase 5b 待真机验证。
+- v1 先单卡单进程验证 `rocprofv2 -i pmc.txt --plugin file -d out python bench.py`；单机多卡 `torchrun` 由 `probing-roofline` 自动识别并逐 rank 包裹（`--no_python` + 生成的 rank wrapper），每个 rank 写 `{artifact_dir}/rank{rank}/{launch_ts}`。多机多卡的注入层级仍见 Phase 5b 待真机验证。
 - 模板渲染必须走参数列表或 `shlex.quote`，禁止把 `{pmc}`/`{output}`/`{app}` 直接字符串拼接；路径或训练命令可能含空格/引号。
 - 单命令启动入口：新增 `probing-roofline`（或 `python -m probing.profiling.torch_profiler.rocm_wrap`）——内部按 `ROCM_DEFAULT_METRICS` 生成默认 DRAM-only `pmc`、按 `{artifact_dir}/rank{rank}/{launch_ts}` 拼好 `-d`，并自动置 `PROBING_TORCH_PROFILER_ANALYSIS=roofline`；用户只需把训练命令放在 `--` 之后。`--steps N` 将替换/追加训练脚本的 `--steps` 以缩短采集窗口（要求脚本支持该参数）。`--dry-run` 只打印渲染结果不执行。
 
@@ -144,7 +144,7 @@ rocprofv2 -ns -i {pmc} --plugin file -d {output} --flush-interval <ms> <train_cm
 
 ```text
 训练启动 / launcher
-   rocprofv2 -ns -i {pmc} --plugin file -d {artifact_dir}/rank{rank}/{launch_ts} --flush-interval <ms> <train_cmd>
+   rocprofv2 -i {pmc} --plugin file -d {artifact_dir}/rank{rank}/{launch_ts} --flush-interval <ms> <train_cmd>
         └─ 全程采集 ─▶ {artifact_dir}/rank{rank}/{launch_ts}/*.csv|json （counter artifact）
                               │
                               ▼  rocm_sidecar.parse_counter_artifact()
@@ -232,9 +232,9 @@ rocprofv2 -ns -i {pmc} --plugin file -d {output} --flush-interval <ms> <train_cm
 3. Phase 2（已完成，代码）：实现 `rocm` capability probe 与 metric catalog、`PROBING_TORCH_ROOFLINE_CONFIG` 配置收敛；capture 元数据落库。
 4. Phase 3（已完成，代码）：v1 采集已从“窗口内 sidecar”改为 wrapper：`wrap_command()` 渲染含 `{pmc}`/`{output}`/`{app}` 且默认使用 `--plugin file` 的命令；`import_artifact_rows()` 实现 offline import（artifact → `profile_counter` → 进程内 `join_rocm_rows_with_timeline` → `profile_roofline`）与临时 artifact 回收。
 
-**采集开销控制（默认启用）**：v1 全程 wrapper 默认写 `range: 0:<dispatch_cap>` 到 `-i` 输入文件（`dispatch_cap` 默认 2000，`0` 表示不限制），并在命令中注入 `-ns`（关闭 rocprofv2 默认的逐 kernel 串行化，这是全程采集的主要开销）与 `--flush-interval <ms>`（默认 1000）。输入文件仍只有一个 `pmc:` 行，因此 `range` 只抑制后续 dispatch 的 counter 落盘、不会引入多次 kernel replay；三者共同把“全程逐 kernel 串行落 CSV + 高频 flush”的线性开销收敛为有界窗口。如需覆盖更长训练区间，调大 `dispatch_cap` 即可，无需新增其他开关。
+**采集开销控制（默认启用）**：v1 全程 wrapper 默认写 `range: 0:<dispatch_cap>` 到 `-i` 输入文件（`dispatch_cap` 默认 2000，`0` 表示不限制），并在命令中注入 `--flush-interval <ms>`（默认 1000）。输入文件仍只有一个 `pmc:` 行，因此 `range` 只抑制后续 dispatch 的 counter 落盘；但注意：DTK 26.04 的 `rocprofv2` 默认会逐 kernel 串行化，且该版本不提供 `-ns`/`--no-serialization` 开关，因此 `range` 只减小了 artifact 体积、并没有消除串行化带来的吞吐下降——真实 DCU 上仍需先用 `--steps N` 限制采集窗口，或改用采样/短窗口方案，性能问题不能被默认参数掩盖。如需覆盖更长训练区间，调大 `dispatch_cap` 即可，无需新增其他开关。
 5. Phase 4（已完成，代码）：离线 fixture/单测/dry-run；`rocm_e2e_spike` 验证 CSV/JSON 解析与 wrapper 命令模板（不实际采集）。本机无 `_core`，pytest 未运行，待真实环境执行。
-6. Phase 5（真实 DCU 待验证，单卡）：单卡小 bench 跑通 `rocprofv2 -ns -i pmc.txt --plugin file -d out <app>` 端到端 counter，确认 metric 名 / 时间戳列 / artifact 后缀，回填峰值 / FLOP 权重。
+6. Phase 5（真实 DCU 待验证，单卡）：单卡小 bench 跑通 `rocprofv2 -i pmc.txt --plugin file -d out <app>` 端到端 counter，确认 metric 名 / 时间戳列 / artifact 后缀，回填峰值 / FLOP 权重。
 7. Phase 5b（多卡注入层级，v1 主路径专项）：单机多卡逐 rank 包裹已实现（`rocm_wrap` 自动识别 `torchrun`，生成 `--no_python` rank wrapper）；多机多卡与 counter 归属的真实落盘仍需真机验证。
 8. 后续（暂不实施）：方法 2 进程内 ROCProfiler/HSA 原生采集，恢复“训练中按需 start/stop”；保留 `RooflineBackend` 采集策略替换点。
 

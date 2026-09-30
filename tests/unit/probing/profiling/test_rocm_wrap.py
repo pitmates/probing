@@ -182,7 +182,7 @@ def test_render_rank_wrapper_embeds_rank_and_script(monkeypatch):
     assert 'RANK="${RANK:-${LOCAL_RANK:-0}}"' in text
     assert "/art/rank$RANK/42" in text
     assert (
-        "rocprofv2 -ns -i /art/pmc.txt --plugin file -d \"$OUT\" "
+        "rocprofv2 -i /art/pmc.txt --plugin file -d \"$OUT\" "
         "--flush-interval 1000 /usr/bin/python3 -u /train/train.py \"$@\""
     ) in text
 
