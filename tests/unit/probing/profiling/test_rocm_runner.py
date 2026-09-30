@@ -149,6 +149,17 @@ def test_import_artifact_rows_reports_missing_directory(tmp_path):
     assert "no rocm counter artifact directory" in error
 
 
+def test_import_artifact_rows_does_not_cross_rank_contaminate(tmp_path):
+    (tmp_path / "rank0").mkdir()
+    _write_artifact(tmp_path / "rank1" / "launch-1")
+
+    rows, error = import_artifact_rows(str(tmp_path), rank=0, finalized=True)
+    assert rows == []
+    assert "no rocm counter artifact" in error
+    # The sibling rank's artifact must remain untouched.
+    assert (tmp_path / "rank1" / "launch-1" / "artifact.json").exists()
+
+
 def test_import_artifact_rows_refuses_unfinalized(tmp_path):
     launch = tmp_path / "rank0" / "launch-1"
     _write_artifact(launch)

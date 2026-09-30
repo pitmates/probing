@@ -213,22 +213,27 @@ def _artifact_files(outdir: str) -> list[str]:
 def discover_artifact_files(artifact_root_value: str, rank: int) -> list[str]:
     """Return candidate artifact files for ``rank``, unsorted.
 
-    Files under ``artifact_root_value/rank{rank}`` take precedence; when that
-    directory has no artifacts the caller falls back to
-    ``artifact_root_value`` (single-rank benches). Ordering is left to the
+    The root layout is detected first. When ``artifact_root_value`` contains
+    any ``rankN`` subdirectory (the torchrun/per-rank wrapper layout) the
+    import is strict: only ``rank{rank}`` is searched, so a rank that failed
+    to produce an artifact cannot silently consume a sibling rank's counters.
+    The flat root layout (legacy single-rank benches with no ``rankN``
+    directories) still searches the root directly. Ordering is left to the
     caller, which sorts by mtime before import.
     """
     if not artifact_root_value:
         return []
-    roots: list[str] = []
-    if rank >= 0:
-        roots.append(os.path.join(artifact_root_value, f"rank{rank}"))
-    roots.append(artifact_root_value)
-    for root in roots:
-        files = _artifact_files(root)
-        if files:
-            return files
-    return []
+    if not os.path.isdir(artifact_root_value):
+        return []
+    has_rank_dirs = any(
+        entry.name.startswith("rank")
+        and entry.name[4:].isdigit()
+        and entry.is_dir()
+        for entry in os.scandir(artifact_root_value)
+    )
+    if has_rank_dirs and rank >= 0:
+        return _artifact_files(os.path.join(artifact_root_value, f"rank{rank}"))
+    return _artifact_files(artifact_root_value)
 
 
 def import_artifact_rows(
