@@ -8,7 +8,7 @@ path to a JSON file::
     {
       "backend": "rocm",
       "rocm_enabled": true,
-      "rocprof_cmd": "rocprofv2 -i {pmc} --plugin file -d {output} {app}",
+      "rocprof_cmd": "rocprofv2 -ns -i {pmc} --plugin file -d {output} {app}",
       "probe_cmd": "rocprofv2 --list-counters",
       "artifact_dir": "/root/private_data/zlp/tmp/probing/data_dcu",
       "keep_artifacts": false,

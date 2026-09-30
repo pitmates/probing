@@ -11,6 +11,7 @@ from probing.profiling.torch_profiler.rocm_runner import (
     artifact_finalized,
     artifact_root,
     import_artifact_rows,
+    inject_no_serialization,
     keep_artifacts,
     sidecar_command,
     sidecar_enabled,
@@ -92,9 +93,25 @@ def test_wrap_command_injects_flush_interval_before_app(monkeypatch):
         app="python train.py",
     )
     assert rendered == (
-        "rocprofv2 -i pmc.txt --plugin file -d /tmp/out "
+        "rocprofv2 -ns -i pmc.txt --plugin file -d /tmp/out "
         "--flush-interval 250 'python train.py'"
     )
+
+
+def test_inject_no_serialization_defaults_on_for_rocprofv2():
+    assert inject_no_serialization(
+        "rocprofv2 -i {pmc} --plugin file -d {output} {app}"
+    ) == "rocprofv2 -ns -i {pmc} --plugin file -d {output} {app}"
+
+
+def test_inject_no_serialization_respects_long_form():
+    command = "rocprofv2 --no-serialization -i {pmc} {app}"
+    assert inject_no_serialization(command) == command
+
+
+def test_inject_no_serialization_skips_legacy_rocprof():
+    command = "rocprof -i {pmc} -d {output} {app}"
+    assert inject_no_serialization(command) == command
 
 
 def test_wrap_command_skips_flush_for_legacy_rocprof(monkeypatch):
