@@ -12,12 +12,20 @@ run. Set the ``dispatch_cap`` / ``flush_interval_ms`` keys in
 ``PROBING_TORCH_ROOFLINE_CONFIG`` to tune, or ``dispatch_cap=0`` to collect the
 whole run.
 
+DTK 26.04 ``rocprofv2`` serializes every kernel while collecting counters and
+exposes no flag or environment variable to disable that, so whole-run
+collection runs ~10x slower than baseline. ``--steps N`` therefore shortens
+the wrapped training run to its first N steps: it is a launch-time validation
+window, not a mid-training sample. The product-grade low-overhead path is the
+in-process ROCProfiler-SDK backend (method 2), not a legacy-tool flag.
+
 Usage::
 
     PROBING_TORCH_ROOFLINE_ARTIFACT_DIR=/path/to/artifacts \
         probing-roofline -- python train.py
 
-Short collection window (requires the training script to honor ``--steps``)::
+Short validation window (shortens the run to N steps; the script must honor
+``--steps``)::
 
     PROBING_TORCH_ROOFLINE_ARTIFACT_DIR=/path/to/artifacts \
         probing-roofline --steps 20 -- python train.py --steps 500
@@ -406,6 +414,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "stream. On DTK 26.04 rocprofv2 this has been observed to produce "
             "an empty pmc_1 directory with no results_*.csv. Prefer a short "
             "--steps run without trace_period for counter roofline.",
+            file=sys.stderr,
+        )
+
+    if args.steps > 0:
+        print(
+            f"note: --steps {args.steps} shortens the wrapped run to its first "
+            f"{args.steps} steps. This is a launch-time validation window, not "
+            "a mid-training sample; the whole shortened run stays ~10x slower "
+            "under rocprofv2 counter serialization.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "warning: whole-run counter collection serializes every kernel and "
+            "runs ~10x slower on DTK 26.04; prefer --steps N for a bounded "
+            "validation window.",
             file=sys.stderr,
         )
 

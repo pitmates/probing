@@ -257,3 +257,27 @@ def test_main_with_instruction_counters_extends_metrics(monkeypatch, tmp_path, c
     pmc_text = (tmp_path / rocm_wrap.DEFAULT_PMC_FILENAME).read_text(encoding="utf-8")
     assert "SQ_INSTS_VALU" in pmc_text
     assert "TCC_EA_RDREQ" in pmc_text
+
+
+def test_main_warns_on_whole_run_collection(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv(rocm_wrap.ARTIFACT_DIR_ENV, str(tmp_path))
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
+
+    code = rocm_wrap.main(["--dry-run", "--", "python", "train.py"])
+    assert code == 0
+    captured = capsys.readouterr().err
+    assert "whole-run counter collection serializes" in captured
+
+
+def test_main_notes_steps_shortens_run(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv(rocm_wrap.ARTIFACT_DIR_ENV, str(tmp_path))
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_CONFIG", raising=False)
+    monkeypatch.delenv("PROBING_TORCH_ROOFLINE_ROCPROF_CMD", raising=False)
+
+    code = rocm_wrap.main(
+        ["--dry-run", "--steps", "20", "--", "python", "train.py", "--steps", "500"]
+    )
+    assert code == 0
+    captured = capsys.readouterr().err
+    assert "shortens the wrapped run to its first 20 steps" in captured
