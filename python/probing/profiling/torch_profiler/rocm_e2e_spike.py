@@ -102,7 +102,12 @@ def render_wrap_cmd(pmc: str, out_dir: str, app: str) -> dict[str, Any]:
     return report
 
 
-def run_import(artifact_dir: str, rank: int) -> dict[str, Any]:
+def run_import(
+    artifact_dir: str,
+    rank: int,
+    *,
+    timeline_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     from probing.profiling.torch_profiler.rocm_runner import import_artifact_rows
 
     backend, torch_module, info_dict = _backend()
@@ -128,6 +133,7 @@ def run_import(artifact_dir: str, rank: int) -> dict[str, Any]:
         global_step=0,
         rank=rank,
         role="",
+        timeline_events=timeline_events or [],
     )
     report["compile"] = {
         "quality": result.quality,
@@ -167,6 +173,11 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="import counter artifacts from this directory root",
     )
+    parser.add_argument(
+        "--timeline",
+        default="",
+        help="optional Kineto timeline JSON (chrome trace or event list) to join",
+    )
     parser.add_argument("--rank", type=int, default=0, help="rank subdirectory to import")
     parser.add_argument("--output", default="", help="write JSON report to this path")
     args = parser.parse_args(argv)
@@ -176,7 +187,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.wrap_cmd:
         report = render_wrap_cmd(args.pmc, args.out_dir, args.app)
     elif args.artifact_dir:
-        report = run_import(args.artifact_dir, args.rank)
+        from probing.profiling.torch_profiler.rocm_sidecar import load_timeline_events
+
+        timeline_events = load_timeline_events(args.timeline) if args.timeline else []
+        report = run_import(args.artifact_dir, args.rank, timeline_events=timeline_events)
     else:
         parser.error("one of --list-counters, --wrap-cmd, or --artifact-dir is required")
 

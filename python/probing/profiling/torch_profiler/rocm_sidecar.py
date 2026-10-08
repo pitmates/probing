@@ -62,6 +62,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
 from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Any
@@ -193,6 +194,35 @@ def _timeline_cpu_op_name(event: Any) -> str | None:
     return name if name.startswith(("aten::", "autograd::")) else None
 
 
+def _timeline_kernel_name(event: Any) -> str | None:
+    """Return the kernel name for a Kineto CUDA/ROCm activity event.
+
+    Chrome-trace dicts must be categorized as a kernel. ``FunctionEvent``
+    objects mirror the CUDA counter path: any event that is not an
+    ``aten::``/``autograd::`` CPU op is treated as a potential kernel, and
+    callers ignore events without a usable external id.
+    """
+    if isinstance(event, dict):
+        if str(event.get("cat") or "").lower() != "kernel":
+            return None
+        name = _timeline_event_name(event)
+        return name if name != "unknown" else None
+    name = _timeline_event_name(event)
+    if not name or name == "unknown":
+        return None
+    if name.startswith(("aten::", "autograd::")):
+        return None
+    return name
+
+
+def _normalize_kernel_name(name: str) -> str:
+    """Normalize a rocprof kernel name for matching Kineto kernel events."""
+    text = name.strip()
+    if text.endswith("(.kd)"):
+        text = text[: -len("(.kd)")].strip()
+    return text
+
+
 def _timeline_event_op_stack(event: Any, op_name: str) -> tuple[str, ...]:
     if isinstance(event, dict):
         stack = event.get("stack")
@@ -221,23 +251,33 @@ def join_rocm_rows_with_timeline(
     """Associate ROCm counter rows with Kineto CPU ops.
 
     Preference order matches ``roofline-backends.zh.md``: keep an explicit
-    ``op_name``, otherwise match by ``correlation_id``, and finally fall back
-    to the nearest preceding CPU launch by timestamp. Rows are mutated in
-    place and returned.
+    ``op_name``, otherwise match by ``correlation_id``, then by the kernel
+    name recorded in the Kineto timeline, and finally fall back to the
+    nearest preceding CPU launch by timestamp. The timestamp fallback only
+    runs when the row timestamp lies inside the observed timeline range, so a
+    device-clock rocprof timestamp is never joined onto a host-clock Kineto
+    trace. Rows are mutated in place and returned.
     """
     cpu_by_external_id: dict[int, list[tuple[str, ...]]] = {}
+    external_id_by_kernel_name: dict[str, int] = {}
     launch_stack_by_timestamp: list[tuple[int, tuple[str, ...]]] = []
     for event in timeline_events or []:
         op_name = _timeline_cpu_op_name(event)
-        if op_name is None:
-            continue
-        stack = _timeline_event_op_stack(event, op_name)
         external_id = _timeline_event_external_id(event)
         timestamp = _timeline_event_timestamp_us(event)
-        if external_id is not None:
-            cpu_by_external_id.setdefault(external_id, []).append(tuple(stack))
-        if timestamp is not None:
-            launch_stack_by_timestamp.append((timestamp, tuple(stack)))
+        if op_name is not None:
+            stack = _timeline_event_op_stack(event, op_name)
+            if external_id is not None:
+                cpu_by_external_id.setdefault(external_id, []).append(tuple(stack))
+            if timestamp is not None:
+                launch_stack_by_timestamp.append((timestamp, tuple(stack)))
+            continue
+        kernel_name = _timeline_kernel_name(event)
+        if kernel_name is not None and external_id is not None:
+            external_id_by_kernel_name.setdefault(kernel_name, external_id)
+            normalized_name = _normalize_kernel_name(kernel_name)
+            if normalized_name != kernel_name:
+                external_id_by_kernel_name.setdefault(normalized_name, external_id)
 
     launch_stack_by_timestamp.sort(key=lambda item: item[0])
     timestamps = [item[0] for item in launch_stack_by_timestamp]
@@ -255,6 +295,19 @@ def join_rocm_rows_with_timeline(
             stacks = cpu_by_external_id.get(correlation_id)
             if stacks:
                 stack = stacks[-1]
+        if stack is None:
+            row_kernel_name = row.get("kernel_name")
+            if row_kernel_name:
+                row_kernel_name = str(row_kernel_name)
+                external_id = external_id_by_kernel_name.get(row_kernel_name)
+                if external_id is None:
+                    normalized_name = _normalize_kernel_name(row_kernel_name)
+                    if normalized_name != row_kernel_name:
+                        external_id = external_id_by_kernel_name.get(normalized_name)
+                if external_id is not None:
+                    stacks = cpu_by_external_id.get(external_id)
+                    if stacks:
+                        stack = stacks[-1]
         if stack is None and timestamps:
             row_timestamp = row.get("timestamp_us")
             if row_timestamp is not None:
@@ -262,7 +315,10 @@ def join_rocm_rows_with_timeline(
                     row_timestamp = int(row_timestamp)
                 except (TypeError, ValueError):
                     row_timestamp = None
-                if row_timestamp is not None:
+                if (
+                    row_timestamp is not None
+                    and timestamps[0] <= row_timestamp <= timestamps[-1]
+                ):
                     position = bisect_right(timestamps, row_timestamp)
                     if position:
                         stack = launch_stack_by_timestamp[position - 1][1]
@@ -493,6 +549,34 @@ def parse_counter_artifact(payload: str | dict[str, Any] | list[dict[str, Any]])
     ):
         return _parse_document({"format": SIDECAR_FORMAT, "counters": list(payload)})
     raise ValueError("sidecar payload must be JSON, CSV, or a list of row dicts")
+
+
+def load_timeline_events(path: str) -> list[dict[str, Any]]:
+    """Load Kineto timeline events from a JSON file for offline association.
+
+    Accepts either a Chrome-trace document (``{"traceEvents": [...]}``) or a
+    bare list of event objects. Each returned element is a plain dict that
+    ``join_rocm_rows_with_timeline`` can consume: ``name`` selects CPU ops,
+    ``ts`` (microseconds) supplies the host launch timestamp, and
+    ``args``/``external_id``/``stack`` are optional.
+    """
+    if not path or not os.path.isfile(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = handle.read()
+    except OSError:
+        return []
+    text = payload.lstrip(chr(0xFEFF)).strip()
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    if isinstance(document, dict) and isinstance(document.get("traceEvents"), list):
+        return [item for item in document["traceEvents"] if isinstance(item, dict)]
+    if isinstance(document, list):
+        return [item for item in document if isinstance(item, dict)]
+    return []
 
 
 def _timestamp_us_from_columns(

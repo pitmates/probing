@@ -14,6 +14,8 @@ from probing.profiling.torch_profiler.backends import (
 from probing.profiling.torch_profiler.rocm_sidecar import (
     SIDECAR_FORMAT,
     build_counter_records,
+    join_rocm_rows_with_timeline,
+    load_timeline_events,
     parse_counter_artifact,
     parse_counter_csv,
 )
@@ -495,3 +497,95 @@ def test_build_counter_records_uses_calibrated_flops(monkeypatch):
     )
     assert missing == []
     assert counters[0].flops == 20
+
+
+def test_load_timeline_events_from_chrome_trace(tmp_path):
+    path = tmp_path / "trace.json"
+    path.write_text(
+        json.dumps(
+            {
+                "traceEvents": [
+                    {"name": "aten::mm", "ph": "X", "ts": 100, "dur": 20},
+                    {"name": "kernel", "ph": "X", "ts": 110, "dur": 5},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    events = load_timeline_events(str(path))
+    assert [event["name"] for event in events] == ["aten::mm", "kernel"]
+
+
+def test_load_timeline_events_from_bare_list(tmp_path):
+    path = tmp_path / "events.json"
+    path.write_text(json.dumps([{"name": "aten::add", "ts": 1}]), encoding="utf-8")
+    assert [event["name"] for event in load_timeline_events(str(path))] == ["aten::add"]
+
+
+def test_load_timeline_events_missing_file_returns_empty(tmp_path):
+    assert load_timeline_events(str(tmp_path / "nope.json")) == []
+
+
+def test_join_rocm_rows_uses_dict_timeline_timestamps():
+    rows = [
+        {
+            "kernel_name": "k",
+            "op_name": "",
+            "correlation_id": 0,
+            "timestamp_us": 200,
+            "metrics": {},
+        }
+    ]
+    events = [
+        {"name": "aten::add", "ts": 100},
+        {"name": "aten::mm", "ts": 300},
+    ]
+    joined = join_rocm_rows_with_timeline(rows, events)
+    assert joined[0]["op_name"] == "aten::add"
+
+
+def test_join_rocm_rows_uses_kernel_name_match():
+    rows = [
+        {
+            "kernel_name": "ncclDevKernel_Generic_4(ncclDevKernelArgsStorage<1024ul>) (.kd)",
+            "op_name": "",
+            "correlation_id": 0,
+            "timestamp_us": 1472970204928,
+            "metrics": {},
+        }
+    ]
+    events = [
+        {
+            "name": "aten::add",
+            "cat": "cpu_op",
+            "ts": 100,
+            "args": {"External id": 42},
+        },
+        {
+            "name": "ncclDevKernel_Generic_4(ncclDevKernelArgsStorage<1024ul>)",
+            "cat": "kernel",
+            "ts": 120,
+            "args": {"External id": 42},
+        },
+    ]
+    joined = join_rocm_rows_with_timeline(rows, events)
+    assert joined[0]["op_name"] == "aten::add"
+    assert joined[0]["op_stack"] == ["aten::add"]
+
+
+def test_join_rocm_rows_ignores_out_of_range_device_timestamps():
+    rows = [
+        {
+            "kernel_name": "k",
+            "op_name": "",
+            "correlation_id": 0,
+            "timestamp_us": 1472970204928,
+            "metrics": {},
+        }
+    ]
+    events = [
+        {"name": "aten::add", "ts": 100},
+        {"name": "aten::mm", "ts": 300},
+    ]
+    joined = join_rocm_rows_with_timeline(rows, events)
+    assert joined[0]["op_name"] == ""
